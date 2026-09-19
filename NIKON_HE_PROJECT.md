@@ -80,6 +80,37 @@ validate end-to-end against Adobe DNG ground truth using a tight decode→diff l
 ⚠️ **Windows gotcha:** PowerShell `>` corrupts binary output (UTF-8 re-encode +
 BOM). Always capture binary pixel dumps via **bash** redirection.
 
+### Installed tooling (absolute paths — winget PATH updates don't reach this session's shell)
+
+A fresh terminal will have these on PATH; the agent shell here must call them by
+absolute path.
+
+| Tool | Path | Use |
+|------|------|-----|
+| Rust/cargo | `~/.cargo/bin` | build/test (prepend to PATH each shell) |
+| MSVC `cl.exe` | VS2022 (14.44) — via a "x64 Native Tools" prompt or vcvars64.bat | build the C++ reference oracle |
+| CMake | `C:\Program Files\CMake\bin\cmake.exe` | build the oracle harness |
+| Ninja | `C:\Users\caleb\AppData\Local\Microsoft\WinGet\Packages\Ninja-build.Ninja_Microsoft.Winget.Source_8wekyb3d8bbwe\ninja.exe` | oracle build generator |
+| ImageMagick | `C:\Program Files\ImageMagick-7.1.2-Q16-HDRI\magick.exe` | `magick compare -metric PSNR/RMSE/AE a.pgm b.pgm null:` + diff maps |
+| exiftool | `C:\Users\caleb\AppData\Local\Programs\ExifTool\ExifTool.exe` | NEF/DNG makernote (`-NEFCompression`, `-LinearizationTable`, dims) |
+| numpy (py 3.12) | on PATH | scripted per-pixel PGM diff (max abs err, %% mismatched) |
+
+Confirmed via exiftool: `DSC_8070` = **High Efficiency**, `DSC_0566/0567` =
+**High Efficiency\***. NEFs carry **no** `LinearizationTable` → HE uses the
+reference's fixed built-in tone curve (`iqx_iqp_lut`), not a per-file table.
+
+### Reference "oracle" harness (Tier-1 validation lever) — TODO, not yet built
+
+Plan: compile the reference `nikon_he/*.cpp` (branch `nikon-he-decoder`) into a
+tiny standalone exe with `cl.exe`/CMake that (a) proves the reference decodes
+OUR HE sample vs Adobe, and (b) **dumps per-stage intermediate buffers**
+(coefficients after entropy → dequant → horizontal IDWT → vertical IDWT → Bayer).
+Then diff each Rust stage against the matching oracle dump to localize bugs to a
+single module instead of only seeing a wrong final image. Build this before/while
+porting the entropy+IDWT stages — it is the difference between per-stage green
+checkpoints and end-to-end guesswork. (Falls back to raw `cl.exe` if CMake is
+inconvenient.)
+
 ## 5. Build & validate (commands)
 
 ```sh
@@ -117,9 +148,37 @@ A small `bin/` example or a Rust integration test can own this comparison.
 
 All are 14-bit, CFA RGGB, Adobe WhiteLevel 15892.
 
+## 6a. Module porting workflow (MANDATORY discipline)
+
+Work **one module at a time**. Do not start the next module until the current one
+is **fully validated**. For each module:
+
+1. **Read** the reference `.h` + `.cpp` under
+   `D:\_repos\_ref_libraw_he\src\decoders\nikon_he\` (branch `nikon-he-decoder`).
+2. **Port** it faithfully to `rawler/src/decompressors/ticoraw/<module>.rs`.
+   Preserve integer widths, signedness, endianness, rounding. Note any
+   Rust-idiomatic deviation in a code comment (e.g. return-by-value vs C++ static).
+3. **Write tests in the same file** (`#[cfg(test)] mod tests`). Every module gets
+   tests — no exceptions. Prefer:
+   - spot-checks of the reference's documented behavior / formulas;
+   - values cross-checked against the reference (hand-computed or oracle-dumped);
+   - round-trip / invariants where applicable.
+4. **Validate fully** before moving on:
+   - `cargo test -p rawler ticoraw` is green (all tests, not just the new one);
+   - `cargo clippy -p rawler` has no new warnings on the module;
+   - once the oracle harness exists: **diff this stage's output against the oracle
+     dump** and confirm it matches (bit-exact for HE) before proceeding.
+5. **Commit** the single module (`+ its tests`), tick the §7 checklist, update the
+   §9 "Next action" pointer and §10 session log. **Push at milestones.**
+
+Rationale: a wavelet/entropy pipeline fails silently — a wrong final image gives
+no hint which of 16 stages is at fault. Per-module validation (ideally against the
+oracle) keeps every step green so bugs are caught where they're introduced.
+
 ## 7. Task checklist (port order)
 
 Foundational → integration. Tick as completed; keep the "Next action" pointer (§9) in sync.
+**One module at a time, fully validated (see §6a) before the next.**
 
 **Setup & framing**
 - [x] Install toolchain, build rawler + dnglab
@@ -147,7 +206,8 @@ Foundational → integration. Tick as completed; keep the "Next action" pointer 
 - [ ] top-level `decode_nikon_he_image` (3-pass driver) → hook into `decode_ticoraw`
 
 **Validation**
-- [ ] Build decode→PGM→diff harness
+- [ ] Build the reference **oracle harness** (C++ per-stage intermediate dumps) — §4
+- [ ] Build decode→PGM→diff harness (dnglab our-path → PGM; `magick compare` / numpy vs `target/gt/*.pgm`)
 - [ ] HE (DSC_8070) decodes; iterate to **0 error** ← primary milestone
 - [ ] HE\* (0566/0567): decode, measure error, push "as far as possible"
 - [ ] Wire result into `RawImage` (levels, photometric, crop) so `dnglab convert` works
@@ -166,25 +226,29 @@ Foundational → integration. Tick as completed; keep the "Next action" pointer 
 
 ## 9. Current state & next action
 
-- **Done:** environment, branch, JPEG-XS framing parser (tests green), decode
-  routing, validated ground-truth harness, reference cloned, plan documented.
-- **Commits on `feat/nikon-he-support`:** scaffold + roadmap + (this) plan.
-- **`decode_ticoraw` today:** parses SOC/CAP/PIH, logs geometry, returns a WIP
-  error. No pixels yet.
-- **▶ NEXT ACTION:** port `gtli_table` (with the `gtli_from_weights` general path,
-  now available via `picture_header`) and `iqx_iqp_lut_data` (tone-curve LUT), then
-  the entropy stages (`gcli_decode`, `coefficient_decode`, `dequantize`).
+- **Done:** environment + helper tools (cmake/ninja/imagemagick/exiftool), branch,
+  ground-truth harness, reference cloned (`nikon-he-decoder` branch), plan.
+- **Ported + tested (16 ticoraw tests green):** `bit_reader`, `subband_config`,
+  `predict_lut`, `picture_header`. Header/framing **verified on real HE + HE\***
+  files (5600×3728, comps=4, nbands=25, precinct_offset=155=0x9B, supported=true).
+- **`decode_ticoraw` today:** parses the full picture header (markers + WGT),
+  logs it, returns a WIP error. No pixels yet.
+- **Pushed to fork through commit `c79c39b6`.** (Doc/tooling commit after that.)
+- **▶ NEXT ACTION:** (per §6a — one module, fully validated) port `gtli_table`
+  (uses the `gtli_from_weights` general path now available via `picture_header`,
+  plus the hardcoded fallback rows). Then `iqx_iqp_lut_data` (tone-curve LUT), then
+  the entropy stages (`gcli_decode`, `coefficient_decode`, `dequantize`). Consider
+  building the oracle harness (§4) before the entropy stages so each can be diffed.
   `compute_buf_stripe_ints` / `compute_kband` are referenced by `decode.cpp` but
   not in `subband_config.cpp` — find their definitions (likely `tile`/`precinct`)
   while porting those. Reference: `D:\_repos\_ref_libraw_he\src\decoders\nikon_he\`
   (branch `nikon-he-decoder`); target: `rawler/src/decompressors/ticoraw/`.
-- **Ported so far (16 ticoraw tests green):** `bit_reader`, `subband_config`,
-  `predict_lut`, `picture_header`. Header/framing verified on real HE + HE\* files.
 
 ## 10. Session log
 
 | Date       | Session | Summary |
 |------------|---------|---------|
 | 2026-09-19 | 1       | Diagnosed RapidRAW's dark HE\* preview fallback; identified format as JPEG-XS/TicoRAW; installed toolchain; created branch + scaffold (marker/PIH parser, tests); routed HE/HE\* into new path; built ground-truth harness; cloned reference decoder; set up fork/upstream remotes; wrote this plan. No codec code yet. |
+| 2026-09-20 | 2       | Pushed branch to fork (`origin`=calebWei/dnglab). Ported 4 modules, each unit-tested (16 ticoraw tests green): `bit_reader`, `subband_config`, `predict_lut`, `picture_header`. Switched reference base to `nikon-he-decoder` branch (has `picture_header`/`gtli_from_weights`; production was missing it). Unified `decode_ticoraw` on the new parser; **verified header/framing on real HE + HE\*** (precinct_offset=155=0x9B, supported=true). Installed helper tools (cmake, ninja, imagemagick, exiftool); confirmed HE vs HE\* via exiftool. Documented §6a per-module workflow + oracle-harness plan. Commits through `c79c39b6` pushed; doc/tooling commit follows. |
 
 <!-- Append a new row per session. Keep §9 "Next action" current. -->
