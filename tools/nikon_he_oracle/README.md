@@ -32,14 +32,18 @@ The NEF raw strip is `StripOffset .. +StripByteCounts` of the CFA SubIFD
 magick compare -metric PSNR bayer_8070.pgm ../../target/gt/DSC_8070.pgm null:
 ```
 
-## KNOWN STATUS (2026-09-20)
+## STATUS (2026-09-20) — DX working
 
-- Header parse works on our files (matches the Rust port; precinct_offset=155).
-- **The reference SEGFAULTS on the Nikon Z50 II (DX, 5600×3728) samples** inside
-  `decode_precinct` on the first precinct. The reference was validated only on FX
-  bodies (Z9/Z8/Z6III/Zf/Z5II). The code is width-parameterized (no hardcoded FX
-  dims), so this is a **bug/gap for DX geometry**, not a fundamental limitation —
-  but it must be root-caused (precinct-header byte-offset derivation is the prime
-  suspect: `nikon_he_precinct_header.cpp`, `compute_f20`, the 20-bit
-  `lb_gcli_bytes` field). An FX HE sample would let us confirm the reference works
-  there and bisect the DX difference.
+- Header parse matches the Rust port (precinct_offset=155).
+- **DX FIX REQUIRED — apply `dx_sig_fix.patch` before building.** The stock
+  reference (FX-only) crashes on the Nikon Z50 II (DX, 5600×3728) because its
+  per-LB significance substream size is wrong (`sig=f20`). The patch computes the
+  correct per-LB `sig = ceil(Σ_sb ceil(ng_sb/8) / 8)` = `[12,12,11,12,11,11,11,11]`.
+  Apply it in the reference clone:
+  ```sh
+  cd D:/_repos/_ref_libraw_he
+  git apply D:/_repos/dnglab/tools/nikon_he_oracle/dx_sig_fix.patch
+  ```
+- With the patch, the oracle decodes **HE and both HE\*** samples and matches the
+  Adobe DNG ground truth to RMSE ≈ 0.57 (PSNR 97–103 dB; ~99.7% of pixels within
+  ±1 LSB). See `../../NIKON_HE_PROJECT.md` §8/§12.

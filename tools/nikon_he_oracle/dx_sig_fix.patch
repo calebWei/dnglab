@@ -1,0 +1,60 @@
+diff --git a/src/decoders/nikon_he/nikon_he_precinct_header.cpp b/src/decoders/nikon_he/nikon_he_precinct_header.cpp
+index a748c0e..c2a375f 100644
+--- a/src/decoders/nikon_he/nikon_he_precinct_header.cpp
++++ b/src/decoders/nikon_he/nikon_he_precinct_header.cpp
+@@ -38,6 +38,35 @@ static inline uint32_t read_be(const uint8_t* p, int bytes) {
+     return v;
+ }
+ 
++static inline int ceil_div(int a, int b) { return (a + b - 1) / b; }
++
++// DX FIX: the per-LB significance substream size is NOT a global f20. Significance
++// is coded 1 bit per significance-group (Ss=8 coeff-groups), packed 8 bits/byte:
++//   sig_bytes[lb] = ceil( sum_over_subbands_in_lb( ceil(ng_sb / 8) ) / 8 )
++// Verified against Z50 II (DX) HE: sig = [12,12,11,12,11,11,11,11]; all 8 LB
++// mini-headers align. (The reference's sig=f20 only held for FX.)
++static void compute_lb_sig_bytes(int image_width, uint32_t sig_out[8]) {
++    const int half = image_width / 2;
++    const int ng_max = (half + 7) / 8;
++    const int ng_ll  = half / 4;
++    const int n4 = (ng_max + 1) / 2;
++    const int n5 = (n4 + 1) / 2;
++    const int n_h5 = n4 - n5;
++    const int ng5[6] = {
++        (n5 + 3) / 4, (n_h5 + 3) / 4, (ng_max + 7) / 8,
++        (ng_max + 3) / 4, (ng_max + 1) / 2, ng_max,
++    };
++    int groups_5level = 0;
++    for (int i = 0; i < 6; ++i) groups_5level += ceil_div(ng5[i], 8);
++    const int groups_ll = ceil_div(ng_ll, 8);
++    const int groups_1level = 2 * ceil_div(ng_max, 8);
++    const int groups_per_lb[8] = {
++        groups_5level, groups_5level, groups_ll, groups_5level,
++        groups_1level, groups_1level, groups_ll, groups_1level,
++    };
++    for (int lb = 0; lb < 8; ++lb) sig_out[lb] = (uint32_t)ceil_div(groups_per_lb[lb], 8);
++}
++
+ bool parse_precinct_header(const uint8_t* data,
+                            size_t data_size,
+                            int image_width,
+@@ -51,6 +80,10 @@ bool parse_precinct_header(const uint8_t* data,
+     // f20 derives from the half-pass width = image_width / 2.
+     out.f20 = compute_f20(image_width / 2);
+ 
++    // DX FIX: per-LB significance substream sizes (replaces the constant f20).
++    uint32_t lb_sig[8];
++    compute_lb_sig_bytes(image_width, lb_sig);
++
+     // Bytes 0-2: total_size_minus_12 (24-bit big-endian)
+     out.total_size = read_be(data, 3);
+ 
+@@ -93,7 +126,7 @@ bool parse_precinct_header(const uint8_t* data,
+         out.lb_data_bytes[lb] = static_cast<uint32_t>((val >> 35) & 0xFFFFF);
+         out.lb_gcli_bytes[lb] = static_cast<uint32_t>((val >> 15) & 0xFFFFF);
+         out.lb_sign_bytes[lb] = static_cast<uint32_t>( val        & 0x7FFF);
+-        out.lb_sig_bytes [lb] = static_cast<uint32_t>(out.f20);
++        out.lb_sig_bytes [lb] = lb_sig[lb];   // DX FIX (was: static_cast<uint32_t>(out.f20))
+ 
+         cursor += 7;                                 // past mini-header
+         out.lb_sig_offset[lb] = static_cast<uint32_t>(cursor);  // sig starts here
