@@ -206,7 +206,9 @@ Foundational → integration. Tick as completed; keep the "Next action" pointer 
 - [ ] top-level `decode_nikon_he_image` (3-pass driver) → hook into `decode_ticoraw`
 
 **Validation**
-- [ ] Build the reference **oracle harness** (C++ per-stage intermediate dumps) — §4
+- [x] Build the reference **oracle harness** (`tools/nikon_he_oracle`, CMake+MSVC) —
+      builds + runs; header OK; **decode crashes on Z50 II DX (see §8 BLOCKER)**.
+      Still TODO: per-stage intermediate dumps (once decode runs on a supported file).
 - [ ] Build decode→PGM→diff harness (dnglab our-path → PGM; `magick compare` / numpy vs `target/gt/*.pgm`)
 - [ ] HE (DSC_8070) decodes; iterate to **0 error** ← primary milestone
 - [ ] HE\* (0566/0567): decode, measure error, push "as far as possible"
@@ -214,6 +216,25 @@ Foundational → integration. Tick as completed; keep the "Next action" pointer 
 
 ## 8. Risks / open questions
 
+- **🔴 BLOCKER (2026-09-20): the reference decoder SEGFAULTS on our samples.**
+  The samples are **Nikon Z50 II** — a **DX (APS-C)** body, 5600×3728 (confirmed
+  via exiftool). The reference was validated only on **FX** bodies
+  (Z9/Z8/Z6III/Zf/Z5II, all ≥6048 wide). Running the reference (via the oracle
+  harness, `tools/nikon_he_oracle`) on `DSC_8070` (HE): the **header parses
+  correctly** (5600×3728, nbands=25, precinct_offset=155, supported=1), but decode
+  **crashes in `decode_precinct` on the first precinct** (p=0). The precinct walk
+  also finds 932 precincts vs the expected `n_tiles*16+2 = 946`.
+  - The reference is **width-parameterized** (no hardcoded FX dims; grep found
+    only comments), so DX support is a **bug to fix**, not a rewrite.
+  - **Prime suspect:** precinct-header byte-offset derivation for DX geometry —
+    `nikon_he_precinct_header.cpp` (`compute_f20(image_width/2)`, the 20-bit
+    `lb_gcli_bytes = (val>>15)&0xFFFFF` field). A bad size makes a `BitReader`
+    read far OOB → segfault.
+  - **Implication:** porting the reference verbatim will reproduce the crash.
+    Before/while porting the entropy stages we must root-cause the DX difference.
+  - **Decision needed (see §11):** (a) debug the reference on DX ourselves, and/or
+    (b) obtain an **FX HE sample** (Z8/Z6III/…) the reference decodes, to confirm
+    the reference works there and bisect the DX-specific difference.
 - **HE\* is not fully solved upstream.** The reference reverted HE\* for
   artifacts; a follow-up PR targets HE/HE\* header parsing. Expect HE\* to need
   extra reverse engineering beyond a straight port. Primary success = HE.
@@ -234,6 +255,10 @@ Foundational → integration. Tick as completed; keep the "Next action" pointer 
 - **`decode_ticoraw` today:** parses the full picture header (markers + WGT),
   logs it, returns a WIP error. No pixels yet.
 - **Pushed to fork through commit `c79c39b6`.** (Doc/tooling commit after that.)
+- **🔴 2026-09-20 finding:** oracle harness built (`tools/nikon_he_oracle`); the
+  reference **crashes on our Z50 II (DX) HE file** in `decode_precinct` (§8
+  BLOCKER). Direction decision pending (§11). This gates trusting a verbatim port
+  of the entropy stages on DX.
 - **▶ NEXT ACTION:** (per §6a — one module, fully validated) port `gtli_table`
   (uses the `gtli_from_weights` general path now available via `picture_header`,
   plus the hardcoded fallback rows). Then `iqx_iqp_lut_data` (tone-curve LUT), then
@@ -249,6 +274,24 @@ Foundational → integration. Tick as completed; keep the "Next action" pointer 
 | Date       | Session | Summary |
 |------------|---------|---------|
 | 2026-09-19 | 1       | Diagnosed RapidRAW's dark HE\* preview fallback; identified format as JPEG-XS/TicoRAW; installed toolchain; created branch + scaffold (marker/PIH parser, tests); routed HE/HE\* into new path; built ground-truth harness; cloned reference decoder; set up fork/upstream remotes; wrote this plan. No codec code yet. |
-| 2026-09-20 | 2       | Pushed branch to fork (`origin`=calebWei/dnglab). Ported 4 modules, each unit-tested (16 ticoraw tests green): `bit_reader`, `subband_config`, `predict_lut`, `picture_header`. Switched reference base to `nikon-he-decoder` branch (has `picture_header`/`gtli_from_weights`; production was missing it). Unified `decode_ticoraw` on the new parser; **verified header/framing on real HE + HE\*** (precinct_offset=155=0x9B, supported=true). Installed helper tools (cmake, ninja, imagemagick, exiftool); confirmed HE vs HE\* via exiftool. Documented §6a per-module workflow + oracle-harness plan. Commits through `c79c39b6` pushed; doc/tooling commit follows. |
+| 2026-09-20 | 2       | Pushed branch to fork (`origin`=calebWei/dnglab). Ported 4 modules, each unit-tested (16 ticoraw tests green): `bit_reader`, `subband_config`, `predict_lut`, `picture_header`. Switched reference base to `nikon-he-decoder` branch (has `picture_header`/`gtli_from_weights`; production was missing it). Unified `decode_ticoraw` on the new parser; **verified header/framing on real HE + HE\*** (precinct_offset=155=0x9B, supported=true). Installed helper tools (cmake, ninja, imagemagick, exiftool); confirmed HE vs HE\* via exiftool. Documented §6a per-module workflow + oracle-harness plan. Commits through `c79c39b6` pushed; doc/tooling commit follows. Then built the oracle harness (`tools/nikon_he_oracle`, CMake+MSVC): header parses on our files, but **reference decode SEGFAULTS on the Nikon Z50 II (DX, 5600×3728) samples** in `decode_precinct` (p=0) — reference validated only on FX bodies. Identified camera via exiftool; confirmed no hardcoded FX dims (DX = fixable bug). Opened §11 decision (debug DX vs get an FX sample). |
 
 <!-- Append a new row per session. Keep §9 "Next action" current. -->
+
+## 11. Open decision (needs the user) — DX support path
+
+The reference crashes on our Nikon Z50 II (DX) files (§8). Options:
+
+- **A — Debug the reference for DX ourselves.** Root-cause the `decode_precinct`
+  crash on `DSC_8070` (precinct-header offsets for DX geometry) using the oracle
+  harness + tracing, fix it, then port the fixed logic. Self-contained; no new
+  inputs. Risk: DX may differ in more than one place.
+- **B — Get an FX HE sample.** An HE `.NEF` (+ Adobe `.dng`) from a Z8/Z9/Z6III/Zf/
+  Z5II. Confirms the reference decodes FX correctly (oracle vs Adobe), gives a
+  bit-exact checkpoint to port against, and lets us bisect the DX-specific
+  difference. Strongly de-risks the port.
+- **C — Both:** get an FX sample *and* debug DX. Recommended if an FX file is
+  available — validate the port on FX, then extend to DX.
+
+Tooling to bisect is ready: `tools/nikon_he_oracle` (add per-stage `fprintf`
+dumps to the reference to compare against Rust stage-by-stage).
