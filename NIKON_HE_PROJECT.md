@@ -148,32 +148,67 @@ A small `bin/` example or a Rust integration test can own this comparison.
 
 All are 14-bit, CFA RGGB, Adobe WhiteLevel 15892.
 
-## 6a. Module porting workflow (MANDATORY discipline)
+## 6a. Module lifecycle (MANDATORY — one module at a time)
 
-Work **one module at a time**. Do not start the next module until the current one
-is **fully validated**. For each module:
+**The core rule: pick up exactly ONE module, drive it to _Done_ (all exit
+criteria below), commit it, and only THEN pick up the next.** Never have two
+modules half-ported at once. A wavelet/entropy pipeline fails silently — a wrong
+final image gives no hint which of ~16 stages is at fault — so every stage must be
+independently green before the next is started.
 
-1. **Read** the reference `.h` + `.cpp` under
-   `D:\_repos\_ref_libraw_he\src\decoders\nikon_he\` (branch `nikon-he-decoder`).
-2. **Port** it faithfully to `rawler/src/decompressors/ticoraw/<module>.rs`.
-   Preserve integer widths, signedness, endianness, rounding. Note any
-   Rust-idiomatic deviation in a code comment (e.g. return-by-value vs C++ static).
-3. **Write tests in the same file** (`#[cfg(test)] mod tests`). Every module gets
-   tests — no exceptions. Prefer:
-   - spot-checks of the reference's documented behavior / formulas;
-   - values cross-checked against the reference (hand-computed or oracle-dumped);
-   - round-trip / invariants where applicable.
-4. **Validate fully** before moving on:
-   - `cargo test -p rawler ticoraw` is green (all tests, not just the new one);
-   - `cargo clippy -p rawler` has no new warnings on the module;
-   - once the oracle harness exists: **diff this stage's output against the oracle
-     dump** and confirm it matches (bit-exact for HE) before proceeding.
-5. **Commit** the single module (`+ its tests`), tick the §7 checklist, update the
-   §9 "Next action" pointer and §10 session log. **Push at milestones.**
+A module moves through these states: **Selected → Ported → Tested → Validated →
+Committed → Done**. Do not advance a state until the prior one holds.
 
-Rationale: a wavelet/entropy pipeline fails silently — a wrong final image gives
-no hint which of 16 stages is at fault. Per-module validation (ideally against the
-oracle) keeps every step green so bugs are caught where they're introduced.
+### 1. Select (start of a module)
+- Take the next unchecked item from the §7 checklist (respect the dependency
+  order). Set the §9 "Next action" pointer to name it as *in progress*.
+- Confirm its dependencies are already **Done** (e.g. `precinct_decode` needs
+  `bit_reader`, `gcli_decode`, `coefficient_decode`, `dequantize`, `gtli_table`).
+
+### 2. Port
+- Read the reference `.h` + `.cpp` under
+  `D:\_repos\_ref_libraw_he\src\decoders\nikon_he\` (branch `nikon-he-decoder`).
+- Translate faithfully to `rawler/src/decompressors/ticoraw/<module>.rs`. Preserve
+  integer widths, signedness, endianness, rounding, and overflow behavior
+  (use `wrapping_*`/`i64` where the C relies on it). Declare `mod <module>;` in
+  `ticoraw/mod.rs`.
+- Note any Rust-idiomatic deviation in a code comment (e.g. return-by-value vs the
+  C++ program-static, slices vs raw pointers). Keep the SPDX/port-provenance header.
+
+### 3. Test (in the same file — NO module ships without tests)
+- Add `#[cfg(test)] mod tests`. Cover, in order of preference:
+  - the reference's documented formulas / behavior (spot values);
+  - values cross-checked against the reference (hand-computed, or dumped from the
+    oracle with `fprintf`);
+  - invariants / round-trips / boundary cases (EOF, last-sub-band, partial tile).
+- At least one test must exercise the module on realistic parameters (e.g. the
+  5600-wide layout), not only toy inputs.
+
+### 4. Validate (the definition of _Done_ — ALL must hold)
+- [ ] `cargo test -p rawler ticoraw` — **all** ticoraw tests green (not just the new one).
+- [ ] `cargo clippy -p rawler` — **no new warnings** attributable to the module
+      (use `#[allow(dead_code)]` with a comment only for APIs a later module will use).
+- [ ] `cargo fmt` applied (or matches `rustfmt.toml`).
+- [ ] **Oracle cross-check where the module produces comparable output:** dump the
+      reference's intermediate for this stage (add a temporary `fprintf` to the
+      ref, rebuild `tools/nikon_he_oracle`) and confirm the Rust output matches
+      **bit-exactly for HE**. For pure-math/LUT/parse modules a unit test against
+      known values suffices; for entropy/DWT/tile/bayer stages the oracle diff is
+      REQUIRED before the module is Done. **Prerequisite:** the oracle must decode
+      the target file — see the DX blocker (§8/§12); on DX, fix the reference
+      first, then use it as the oracle.
+
+### 5. Commit & close out
+- Commit the single module **+ its tests** (one module per commit).
+- Tick its box in the §7 checklist; update the §9 "Ported so far" list and move the
+  "Next action" pointer to the next module.
+- Append/refresh the §10 session-log row. **Push to the fork at each milestone.**
+
+### 6. Then — and only then — return to step 1 for the next module.
+
+> If a module can't reach _Done_ (e.g. it needs an oracle the reference can't yet
+> produce), STOP, record the blocker in §8 + §9, and surface it — do not silently
+> move on to the next module with an unvalidated one behind you.
 
 ## 7. Task checklist (port order)
 
@@ -247,27 +282,34 @@ Foundational → integration. Tick as completed; keep the "Next action" pointer 
 
 ## 9. Current state & next action
 
-- **Done:** environment + helper tools (cmake/ninja/imagemagick/exiftool), branch,
-  ground-truth harness, reference cloned (`nikon-he-decoder` branch), plan.
-- **Ported + tested (16 ticoraw tests green):** `bit_reader`, `subband_config`,
+There are **two workstreams**: **(A) foundational / validation infra** (harness,
+oracle, and the DX reference fix) and **(B) the Rust module port** (§7). (A) must
+be far enough along to validate (B). Right now (A) has an open blocker (DX).
+
+- **(A) Foundational — done:** environment + helper tools
+  (cmake/ninja/imagemagick/exiftool), branch + fork/upstream remotes, ground-truth
+  PGM harness, reference cloned (`nikon-he-decoder`), **oracle harness built**
+  (`tools/nikon_he_oracle`), plan.
+- **(A) Foundational — BLOCKED:** the oracle can't decode our **DX (Z50 II)** files
+  yet — the reference's `parse_precinct_header` uses a wrong per-LB `sig` size on
+  DX (§8, §12). **This is the current active task** (user chose "debug DX"). Until
+  fixed, entropy-stage modules in (B) cannot be oracle-validated on DX.
+- **(B) Ported + tested (16 ticoraw tests green):** `bit_reader`, `subband_config`,
   `predict_lut`, `picture_header`. Header/framing **verified on real HE + HE\***
-  files (5600×3728, comps=4, nbands=25, precinct_offset=155=0x9B, supported=true).
-- **`decode_ticoraw` today:** parses the full picture header (markers + WGT),
-  logs it, returns a WIP error. No pixels yet.
-- **Pushed to fork through commit `c79c39b6`.** (Doc/tooling commit after that.)
-- **🔴 2026-09-20 finding:** oracle harness built (`tools/nikon_he_oracle`); the
-  reference **crashes on our Z50 II (DX) HE file** in `decode_precinct` (§8
-  BLOCKER). Direction decision pending (§11). This gates trusting a verbatim port
-  of the entropy stages on DX.
-- **▶ NEXT ACTION:** (per §6a — one module, fully validated) port `gtli_table`
-  (uses the `gtli_from_weights` general path now available via `picture_header`,
-  plus the hardcoded fallback rows). Then `iqx_iqp_lut_data` (tone-curve LUT), then
-  the entropy stages (`gcli_decode`, `coefficient_decode`, `dequantize`). Consider
-  building the oracle harness (§4) before the entropy stages so each can be diffed.
-  `compute_buf_stripe_ints` / `compute_kband` are referenced by `decode.cpp` but
-  not in `subband_config.cpp` — find their definitions (likely `tile`/`precinct`)
-  while porting those. Reference: `D:\_repos\_ref_libraw_he\src\decoders\nikon_he\`
-  (branch `nikon-he-decoder`); target: `rawler/src/decompressors/ticoraw/`.
+  (5600×3728, comps=4, nbands=25, precinct_offset=155=0x9B, supported=true).
+  `decode_ticoraw` parses the picture header and returns a WIP error (no pixels yet).
+- **Pushed to fork through `a0c4024f`.**
+- **▶ NEXT ACTION (foundational, do first): crack the DX `sig` formula and patch
+  the reference** so the oracle decodes `DSC_8070` (steps in §12). Then verify
+  oracle output vs `target/gt/DSC_8070.pgm`.
+- **▶ THEN (resume the module port, §6a lifecycle, one at a time):** next module is
+  `gtli_table` (uses `gtli_from_weights` via `picture_header`, plus fallback rows),
+  then `iqx_iqp_lut_data`, then the entropy stages (`gcli_decode`,
+  `coefficient_decode`, `dequantize`), each **oracle-validated** using the now-fixed
+  reference. Port `precinct_header` **with the DX `sig` fix baked in**.
+  Note: `compute_buf_stripe_ints`/`compute_kband` live in `nikon_he_tile.h` (already
+  read); port them with the `tile` module. Reference:
+  `D:\_repos\_ref_libraw_he\src\decoders\nikon_he\` (branch `nikon-he-decoder`).
 
 ## 10. Session log
 
@@ -318,6 +360,23 @@ to the ref, since reverted) pinned the DX incompatibility:
   - LB1 @1070 ⇒ **sig = 12**. LB2 (the LL LB, sb 12) has a **different** sig.
   - So `sig` is **per-LB / per-LB-type**, likely derived from the LB's
     significance-group count — NOT a single global `f20`.
+
+### Where this RE sits (foundational vs module work)
+
+This DX RE is **foundational validation-infra work, NOT a module port** — but its
+output feeds one module:
+
+- **Foundational (do now, in the reference C++):** derive the DX `sig` formula and
+  patch the reference's `parse_precinct_header` so the **oracle** decodes our
+  files. This unblocks the oracle as the validation tool for **every** entropy
+  stage (§6a step 4 requires an oracle diff; on DX that oracle doesn't exist until
+  this is fixed). It gates the whole port, not one module.
+- **Module input (later, in Rust):** the resulting per-LB `sig` formula becomes
+  part of the **`precinct_header`** module when it is ported to Rust (§7). Port it
+  with the DX fix baked in; do not re-port the reference's buggy `sig=f20`.
+
+So: finish the DX reference fix as foundational work → then resume the §7 module
+port order, using the now-working oracle to validate each stage.
 
 ### Next step to crack DX (resume here)
 
