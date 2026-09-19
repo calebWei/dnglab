@@ -43,6 +43,7 @@
 
 mod bit_reader;
 mod gtli_table;
+mod iqx_iqp_lut_data;
 mod picture_header;
 mod predict_lut;
 mod subband_config;
