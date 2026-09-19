@@ -42,6 +42,7 @@
 //! in yogthos/LibRaw PR #826).
 
 mod bit_reader;
+mod predict_lut;
 mod subband_config;
 
 use crate::pixarray::PixU16;

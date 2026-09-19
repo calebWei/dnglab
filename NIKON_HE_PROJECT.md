@@ -46,11 +46,19 @@ Full evidence and the picture-header field breakdown are in `NIKON_HE_ROADMAP.md
 Port the clean-room reference decoder (C++) to Rust module-by-module, then
 validate end-to-end against Adobe DNG ground truth using a tight decode→diff loop.
 
-- **Reference:** yogthos/LibRaw, branch `nikon-he-production`, dir
-  `src/decoders/nikon_he/` (16 modules, ~90 KB C++). Cloned locally at
+- **Reference:** yogthos/LibRaw, dir `src/decoders/nikon_he/`. Cloned locally at
   **`D:\_repos\_ref_libraw_he`**. License: LGPL-2.1 / CDDL (compatible with
   rawler's LGPL-2.1; clean-room, no Nikon SDK). Do **not** commit reference code
   into this repo; port/rewrite in Rust.
+  - **Use branch `nikon-he-decoder` (checked out locally), NOT `nikon-he-production`.**
+    Production is missing `nikon_he_picture_header.{h,cpp}` — the general
+    **WGT-derived GTLI path** (`gtli_from_weights`) and HE/HE\* header parsing.
+    The `nikon-he-decoder` branch has the complete 33-file set; foundational
+    files (bit_reader, subband_config) are byte-identical between the two.
+  - GTLI has two paths: general (compute from picture-header WGT weights) and a
+    hardcoded fallback table (`kGtliTable`, captured combos incl. HE\* rows). The
+    general path is required for robustness — the fallback only covers sampled
+    `(Bp,Br)` combos.
 - **Ground truth:** Adobe DNG Converter output (mosaic CFA DNG), decoded by
   dnglab into a 16-bit PGM and diffed against our decoder output.
 - **Order:** foundational data/bit-IO first, integration last (see §7 checklist).
@@ -124,7 +132,8 @@ Foundational → integration. Tick as completed; keep the "Next action" pointer 
 
 **Codec port (`decompressors/ticoraw/…`)**
 - [x] `bit_reader` (MSB bit pump) — ported + unit tested
-- [ ] `gtli_table`, `iqx_iqp_lut_data`, `predict_lut` (pure data/LUTs)
+- [x] `predict_lut` (GCLI prediction LUT) — ported + tested
+- [ ] `gtli_table`, `iqx_iqp_lut_data` (pure data/LUTs) + `picture_header` (WGT/gtli_from_weights)
 - [x] `subband_config` (`compute_subband_layout`) — ported + tested; still need `compute_buf_stripe_ints`, `compute_kband` (defined elsewhere in ref — locate)
 - [ ] `gcli_decode`, `coefficient_decode`, `dequantize`
 - [ ] `precinct_header`, `precinct_decode`, `predecessor`
