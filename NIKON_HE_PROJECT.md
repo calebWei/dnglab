@@ -123,7 +123,7 @@ Foundational → integration. Tick as completed; keep the "Next action" pointer 
 - [ ] Locate precinct-stream body offset + linearization LUT + black/white levels from the NEF makernote
 
 **Codec port (`decompressors/ticoraw/…`)**
-- [ ] `bit_reader` (MSB bit pump)
+- [x] `bit_reader` (MSB bit pump) — ported + unit tested
 - [ ] `gtli_table`, `iqx_iqp_lut_data`, `predict_lut` (pure data/LUTs)
 - [ ] `subband_config` (layout math: `compute_subband_layout`, `compute_buf_stripe_ints`, `compute_kband`)
 - [ ] `gcli_decode`, `coefficient_decode`, `dequantize`

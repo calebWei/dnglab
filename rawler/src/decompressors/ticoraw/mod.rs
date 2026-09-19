@@ -41,6 +41,8 @@
 //! the repository root for the porting plan (reference: the clean-room decoder
 //! in yogthos/LibRaw PR #826).
 
+mod bit_reader;
+
 use crate::pixarray::PixU16;
 
 /// JPEG-XS codestream markers (ISO/IEC 21122-1). Only the subset relevant to
