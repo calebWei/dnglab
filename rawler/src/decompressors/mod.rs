@@ -48,6 +48,7 @@ pub mod jpegxl;
 pub mod ljpeg;
 pub mod packed;
 pub mod radc;
+pub mod ticoraw;
 
 /// Trait for mutable line iterators over image data.
 ///

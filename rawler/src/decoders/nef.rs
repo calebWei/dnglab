@@ -202,10 +202,6 @@ impl<'a> Decoder for NefDecoder<'a> {
     };
     debug!("TIFF compression flag: {}, NEF compression mode: {:?}", compression, nef_compression);
 
-    if matches!(nef_compression, Some(NefCompression::HighEfficency)) || matches!(nef_compression, Some(NefCompression::HighEfficencyStar)) {
-      return Err(RawlerError::DecoderFailed(format!("NEF compression {:?} is not supported", nef_compression)));
-    }
-
     let offset = fetch_tiff_tag!(raw, TiffCommonTag::StripOffsets).force_usize(0);
     let size = fetch_tiff_tag!(raw, TiffCommonTag::StripByteCounts).force_usize(0);
     let rows_per_strip = fetch_tiff_tag!(raw, TiffCommonTag::RowsPerStrip).get_usize(0).ok().flatten().unwrap_or(height);
@@ -233,7 +229,13 @@ impl<'a> Decoder for NefDecoder<'a> {
       return Err(RawlerError::DecoderFailed("NEF: TIFF and makernote endianness mismatch".to_string()));
     }
 
-    let image = if self.camera.model == "NIKON D100" {
+    let image = if matches!(
+      nef_compression,
+      Some(NefCompression::HighEfficency) | Some(NefCompression::HighEfficencyStar)
+    ) {
+      // Nikon HE / HE* == intoPIX TicoRAW == JPEG-XS codestream (WIP).
+      crate::decompressors::ticoraw::decode_ticoraw(&src, width, height, bps, dummy)?
+    } else if self.camera.model == "NIKON D100" {
       width = 3040;
       decompress_12be_wcontrol(&src, width, height, dummy)?
     } else if self.camera.find_hint("coolpixsplit") {
