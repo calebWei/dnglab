@@ -231,7 +231,10 @@ Foundational → integration. Tick as completed; keep the "Next action" pointer 
       ported + tested; **validated on real files** (HE 8070 + HE\* 0566/0567 all parse:
       5600×3728, comps=4, nbands=25, precinct_offset=155=0x9B, supported=true).
       Supersedes the old scaffold parser in `mod.rs`.
-- [ ] `gtli_table`, `iqx_iqp_lut_data` (pure data/LUTs)
+- [x] `gtli_table` (dynamic `compute_gtli_table`/`gtli_for_sub_band` from WGT weights +
+      `wgt_index_for_band` 26→25 remap + verbatim static fallback table) — ported + tested
+      (7 tests; ground-truth invariant: every static row has `values[23]==values[12]`).
+- [ ] `iqx_iqp_lut_data` (pure data/LUTs)
 - [x] `subband_config` (`compute_subband_layout`) — ported + tested; still need `compute_buf_stripe_ints`, `compute_kband` (defined elsewhere in ref — locate)
 - [ ] `gcli_decode`, `coefficient_decode`, `dequantize`
 - [ ] `precinct_header`, `precinct_decode`, `predecessor`
@@ -292,15 +295,14 @@ be far enough along to validate (B). Right now (A) has an open blocker (DX).
   (`tools/nikon_he_oracle/dx_sig_fix.patch`), matching Adobe to RMSE ≈ 0.57 (§8,
   §12). Entropy-stage modules can now be oracle-validated on DX. **Workstream (A)
   is done** — remaining optional: per-stage intermediate dumps for finer diffing.
-- **(B) Ported + tested (16 ticoraw tests green):** `bit_reader`, `subband_config`,
-  `predict_lut`, `picture_header`. Header/framing **verified on real HE + HE\***
+- **(B) Ported + tested (17 ticoraw tests green):** `bit_reader`, `subband_config`,
+  `predict_lut`, `picture_header`, `gtli_table`. Header/framing **verified on real HE + HE\***
   (5600×3728, comps=4, nbands=25, precinct_offset=155=0x9B, supported=true).
   `decode_ticoraw` parses the picture header and returns a WIP error (no pixels yet).
 - **Foundational workstream (A) is COMPLETE**, including the DX fix — oracle
   decodes HE + HE\* on the Z50 II, matching Adobe (RMSE ≈ 0.57).
 - **▶ NEXT ACTION (resume module port, workstream B, §6a lifecycle, ONE at a time,
-  oracle-validated):** next module is `gtli_table` (uses `gtli_from_weights` via
-  `picture_header`, plus fallback rows), then `iqx_iqp_lut_data`, then the entropy
+  oracle-validated):** next module is `iqx_iqp_lut_data`, then the entropy
   stages (`gcli_decode`, `coefficient_decode`, `dequantize`), then
   `precinct_header` **with the DX `sig` fix baked in** (formula in §12), then
   `precinct_decode`/`predecessor`, the IDWTs, `tile` (+ `compute_buf_stripe_ints`/
@@ -316,6 +318,8 @@ be far enough along to validate (B). Right now (A) has an open blocker (DX).
 | 2026-09-19 | 1       | Diagnosed RapidRAW's dark HE\* preview fallback; identified format as JPEG-XS/TicoRAW; installed toolchain; created branch + scaffold (marker/PIH parser, tests); routed HE/HE\* into new path; built ground-truth harness; cloned reference decoder; set up fork/upstream remotes; wrote this plan. No codec code yet. |
 | 2026-09-20 | 2       | Pushed branch to fork (`origin`=calebWei/dnglab). Ported 4 modules, each unit-tested (16 ticoraw tests green): `bit_reader`, `subband_config`, `predict_lut`, `picture_header`. Switched reference base to `nikon-he-decoder` branch (has `picture_header`/`gtli_from_weights`; production was missing it). Unified `decode_ticoraw` on the new parser; **verified header/framing on real HE + HE\*** (precinct_offset=155=0x9B, supported=true). Installed helper tools (cmake, ninja, imagemagick, exiftool); confirmed HE vs HE\* via exiftool. Documented §6a per-module workflow + oracle-harness plan. Commits through `c79c39b6` pushed; doc/tooling commit follows. Then built the oracle harness (`tools/nikon_he_oracle`, CMake+MSVC): header parses on our files, but **reference decode SEGFAULTS on the Nikon Z50 II (DX, 5600×3728) samples** in `decode_precinct` (p=0) — reference validated only on FX bodies. Identified camera via exiftool; confirmed no hardcoded FX dims (DX = fixable bug). Opened §11 decision (debug DX vs get an FX sample). Then (per user: debug DX) root-caused the crash (§12): `parse_precinct_header` returns false on DX because the per-LB significance substream size is hardcoded `sig=f20=11` but the real DX value is 12 for the lift LBs (and differs for the LL LB) — `sig` is per-LB, not a global `f20`. Mini-header bit layout is correct. Saved analysis tooling (`tools/nikon_he_oracle/analysis/pp_boundary.py`). Next: derive the per-LB sig formula, patch the reference, verify oracle vs Adobe, then port. |
 | 2026-09-20 | 3       | **Completed foundational workstream (A), incl. the DX fix.** Derived the per-LB significance formula `sig=ceil(Σ ceil(ng_sb/8)/8)` = `[12,12,11,12,11,11,11,11]`; verified all 8 LB headers align. Patched the reference (`dx_sig_fix.patch`) and rebuilt the oracle: **HE (DSC_8070) and both HE\* (0566/0567) now decode** and match Adobe to RMSE ≈ 0.57 / mean-abs ≈ 0.14 LSB (PSNR 97–103 dB) — HE\* is fine on this camera. Expanded §6a into a full module lifecycle (Selected→…→Done with a definition-of-done gate); classified the DX RE as foundational feeding the `precinct_header` module. Saved `dx_sig_fix.patch` + analysis scripts under `tools/nikon_he_oracle`. Next session: resume the Rust module port (workstream B) from `gtli_table`, oracle-validated. |
+
+| 2026-09-20 | 4       | **Ported `gtli_table` (workstream B, module 5/…).** Faithful port of `nikon_he_gtli_table.{h,cpp}`: the live dynamic path (`compute_gtli_table`/`gtli_for_sub_band` computing `clamp(Qp-gain[w]-(priority[w]<Rp),0,15)` from the picture-header WGT weights) plus the 26→25 `wgt_index_for_band` remap (pass-B LL band 23 reuses pass-A LL WGT band 12) and the reference's verbatim static fallback table (retained as fixture; dead on the header-present live path). 7 unit tests (17 ticoraw total, all green); clippy clean; fmt clean. Ground-truth cross-check: every captured static row satisfies `values[23]==values[12]`, independently confirming the shared-LL band remap. Pure LUT/formula module → unit tests suffice per §6a (no oracle diff required at this stage). Next: `iqx_iqp_lut_data`. |
 
 <!-- Append a new row per session. Keep §9 "Next action" current. -->
 
