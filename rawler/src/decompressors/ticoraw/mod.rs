@@ -42,6 +42,7 @@
 //! in yogthos/LibRaw PR #826).
 
 mod bit_reader;
+mod gcli_decode;
 mod gtli_table;
 mod iqx_iqp_lut_data;
 mod picture_header;

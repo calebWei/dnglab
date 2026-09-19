@@ -32,6 +32,32 @@ The NEF raw strip is `StripOffset .. +StripByteCounts` of the CFA SubIFD
 magick compare -metric PSNR bayer_8070.pgm ../../target/gt/DSC_8070.pgm null:
 ```
 
+## Per-stage capture (oracle cross-check fixtures)
+
+Entropy/DWT/tile/bayer Rust modules are validated **bit-exactly** against the
+reference by capturing its exact stage I/O on a real file, then asserting the
+Rust port reproduces it. Pattern (used for `gcli_decode`):
+
+1. In the reference clone, add an **env-gated** `fprintf` dump to the relevant
+   stage (e.g. `nikon_he_precinct_decode.cpp`), guarded by
+   `getenv("NIKON_HE_..._DUMP") && pred_state.precinct_index() == 0` so it fires
+   for the first precinct only. Dump the stage's inputs (raw substream bytes,
+   params) **and** outputs as hex. Capture whole line-block buffers, not
+   per-sub-band slices — the sig/gcli readers persist mid-byte across a LB's
+   sub-bands, so a faithful fixture must replay all of a LB's sub-bands against
+   one reader pair.
+2. Rebuild the oracle, run it with the env var set, redirect stderr to a file.
+   (Note: `precinct_index()==0` fires once per tile, so the dump repeats ~59×;
+   take the first block.)
+3. Distill the first block into a small fixture under
+   `rawler/src/decompressors/ticoraw/testdata/` and add a `#[test]` that replays
+   it through the Rust module (see `gcli_decode.rs::oracle_lb0_dsc8070_bit_exact`).
+4. **Revert the temporary capture** from the reference clone (`git checkout --`),
+   leaving `dx_sig_fix` intact (it lives in `nikon_he_precinct_header.cpp`).
+
+Extract the HE strip first with `analysis/extract_strip.py` (writes
+`_ref_libraw_he/oracle/strip_8070.bin`).
+
 ## STATUS (2026-09-20) — DX working
 
 - Header parse matches the Rust port (precinct_offset=155).

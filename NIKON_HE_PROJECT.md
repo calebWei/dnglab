@@ -239,7 +239,12 @@ Foundational → integration. Tick as completed; keep the "Next action" pointer 
       breakpoint anchors, reference interpolation formula, endpoints/monotonicity,
       caching). Guards the reference's benign OOB `k+1` read at the final breakpoint.
 - [x] `subband_config` (`compute_subband_layout`) — ported + tested; still need `compute_buf_stripe_ints`, `compute_kband` (defined elsewhere in ref — locate)
-- [ ] `gcli_decode`, `coefficient_decode`, `dequantize`
+- [x] `gcli_decode` (per-sub-band GCLI decode: sig-bit-per-8-group + unary deltas,
+      modes 0x71 zero-pred / 0x73 vert-pred) — ported + tested (6 tests incl. an
+      **oracle bit-exact cross-check** on DSC_8070 precinct 0 / LB 0, all 6 sub-bands,
+      701 groups, mode 0x73 with shared reader state). Fixture:
+      `ticoraw/testdata/gcli_lb0_8070.txt`; capture method in oracle README.
+- [ ] `coefficient_decode`, `dequantize`
 - [ ] `precinct_header`, `precinct_decode`, `predecessor`
 - [ ] `idwt_horizontal`, `idwt_vertical`
 - [ ] `tile` (`decode_tile`)
@@ -298,16 +303,17 @@ be far enough along to validate (B). Right now (A) has an open blocker (DX).
   (`tools/nikon_he_oracle/dx_sig_fix.patch`), matching Adobe to RMSE ≈ 0.57 (§8,
   §12). Entropy-stage modules can now be oracle-validated on DX. **Workstream (A)
   is done** — remaining optional: per-stage intermediate dumps for finer diffing.
-- **(B) Ported + tested (21 ticoraw tests green):** `bit_reader`, `subband_config`,
-  `predict_lut`, `picture_header`, `gtli_table`, `iqx_iqp_lut_data`. Header/framing
+- **(B) Ported + tested (27 ticoraw tests green):** `bit_reader`, `subband_config`,
+  `predict_lut`, `picture_header`, `gtli_table`, `iqx_iqp_lut_data`, `gcli_decode`
+  (the last **oracle bit-exact-validated** on real HE data). Header/framing
   **verified on real HE + HE\*** (5600×3728, comps=4, nbands=25,
   precinct_offset=155=0x9B, supported=true). `decode_ticoraw` parses the picture
   header and returns a WIP error (no pixels yet).
 - **Foundational workstream (A) is COMPLETE**, including the DX fix — oracle
   decodes HE + HE\* on the Z50 II, matching Adobe (RMSE ≈ 0.57).
 - **▶ NEXT ACTION (resume module port, workstream B, §6a lifecycle, ONE at a time,
-  oracle-validated):** all pure data/LUT modules are done; next are the entropy
-  stages (`gcli_decode`, `coefficient_decode`, `dequantize`), then
+  oracle-validated):** `gcli_decode` done (oracle bit-exact); next entropy stages
+  are `coefficient_decode` then `dequantize`, then
   `precinct_header` **with the DX `sig` fix baked in** (formula in §12), then
   `precinct_decode`/`predecessor`, the IDWTs, `tile` (+ `compute_buf_stripe_ints`/
   `compute_kband` from `nikon_he_tile.h`), `bayer`, and the 3-pass driver.
@@ -326,6 +332,8 @@ be far enough along to validate (B). Right now (A) has an open blocker (DX).
 | 2026-09-20 | 4       | **Ported `gtli_table` (workstream B, module 5/…).** Faithful port of `nikon_he_gtli_table.{h,cpp}`: the live dynamic path (`compute_gtli_table`/`gtli_for_sub_band` computing `clamp(Qp-gain[w]-(priority[w]<Rp),0,15)` from the picture-header WGT weights) plus the 26→25 `wgt_index_for_band` remap (pass-B LL band 23 reuses pass-A LL WGT band 12) and the reference's verbatim static fallback table (retained as fixture; dead on the header-present live path). 7 unit tests (17 ticoraw total, all green); clippy clean; fmt clean. Ground-truth cross-check: every captured static row satisfies `values[23]==values[12]`, independently confirming the shared-LL band remap. Pure LUT/formula module → unit tests suffice per §6a (no oracle diff required at this stage). Next: `iqx_iqp_lut_data`. |
 
 | 2026-09-20 | 4       | **Ported `iqx_iqp_lut_data` (workstream B, module 6/…).** Faithful port of `nikon_he_iqx_iqp_lut_data.h`: 256 PWL `(x_in,y_out)` breakpoints (generated from the reference to avoid transcription error) + lazy materialization of the 81792-entry tone-curve LUT by integer linear interpolation (`ya + (yb-ya)*(i-xa)/(xb-xa)`), cached via `OnceLock` in a heap `Vec` (~320 KB). Guarded the reference's benign out-of-bounds `BREAKPOINTS[k+1]` read at the final breakpoint (harmless in C++ only because `i-xa==0`). 4 unit tests (all 21 ticoraw green); rustfmt-clean; clippy-clean. Pure LUT module → unit tests suffice per §6a. Both `gtli_table` (module 5) and `iqx_iqp_lut_data` landed this session. Reverted unrelated crate-wide rustfmt churn on session-2 files. Next: entropy stages, starting `gcli_decode`. |
+
+| 2026-09-20 | 4       | **Ported `gcli_decode` (workstream B, module 7/… — first entropy stage).** Faithful port of `nikon_he_gcli_decode.{h,cpp}`: significance bit per 8-group block + per-group unary deltas; modes 0x71 (zero-pred, `gcli=gtli+u`) and 0x73 (vert-pred via prediction LUT, baseline `max(prev,gtli)`). 5 synthetic unit tests + **1 oracle bit-exact cross-check**: established the oracle-capture pattern — added an env-gated (`NIKON_HE_GCLI_DUMP`) dump to the reference `decode_precinct`, rebuilt the oracle, decoded real DSC_8070, and captured precinct 0 / LB 0 (shared sig+gcli readers, all 6 sub-bands / 701 groups, mode 0x73, zero prev). The Rust port reproduces the reference output byte-for-byte (fixture `ticoraw/testdata/gcli_lb0_8070.txt`). Reverted the temporary reference capture (dx_sig_fix intact). 27 ticoraw tests green; rustfmt-clean; module clippy-clean (crate-wide unwrap/format lints are pre-existing toolchain noise). Next: `coefficient_decode`. |
 
 <!-- Append a new row per session. Keep §9 "Next action" current. -->
 
