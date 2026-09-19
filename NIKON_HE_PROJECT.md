@@ -133,7 +133,11 @@ Foundational → integration. Tick as completed; keep the "Next action" pointer 
 **Codec port (`decompressors/ticoraw/…`)**
 - [x] `bit_reader` (MSB bit pump) — ported + unit tested
 - [x] `predict_lut` (GCLI prediction LUT) — ported + tested
-- [ ] `gtli_table`, `iqx_iqp_lut_data` (pure data/LUTs) + `picture_header` (WGT/gtli_from_weights)
+- [x] `picture_header` (markers, WGT weights, `gtli_from_weights`, `is_supported`) —
+      ported + tested; **validated on real files** (HE 8070 + HE\* 0566/0567 all parse:
+      5600×3728, comps=4, nbands=25, precinct_offset=155=0x9B, supported=true).
+      Supersedes the old scaffold parser in `mod.rs`.
+- [ ] `gtli_table`, `iqx_iqp_lut_data` (pure data/LUTs)
 - [x] `subband_config` (`compute_subband_layout`) — ported + tested; still need `compute_buf_stripe_ints`, `compute_kband` (defined elsewhere in ref — locate)
 - [ ] `gcli_decode`, `coefficient_decode`, `dequantize`
 - [ ] `precinct_header`, `precinct_decode`, `predecessor`
@@ -167,14 +171,15 @@ Foundational → integration. Tick as completed; keep the "Next action" pointer 
 - **Commits on `feat/nikon-he-support`:** scaffold + roadmap + (this) plan.
 - **`decode_ticoraw` today:** parses SOC/CAP/PIH, logs geometry, returns a WIP
   error. No pixels yet.
-- **▶ NEXT ACTION:** port the pure-data LUT modules (`gtli_table`,
-  `iqx_iqp_lut_data`, `predict_lut`), then the entropy stages (`gcli_decode`,
-  `coefficient_decode`, `dequantize`). `compute_buf_stripe_ints` / `compute_kband`
-  are referenced by `decode.cpp` but not in `subband_config.cpp` — find their
-  definitions (likely `tile`/`precinct`) while porting those. Reference files:
-  `D:\_repos\_ref_libraw_he\src\decoders\nikon_he\`; target:
-  `rawler/src/decompressors/ticoraw/`.
-- **Ported so far:** `bit_reader`, `subband_config` (both unit-tested, 7 tests green).
+- **▶ NEXT ACTION:** port `gtli_table` (with the `gtli_from_weights` general path,
+  now available via `picture_header`) and `iqx_iqp_lut_data` (tone-curve LUT), then
+  the entropy stages (`gcli_decode`, `coefficient_decode`, `dequantize`).
+  `compute_buf_stripe_ints` / `compute_kband` are referenced by `decode.cpp` but
+  not in `subband_config.cpp` — find their definitions (likely `tile`/`precinct`)
+  while porting those. Reference: `D:\_repos\_ref_libraw_he\src\decoders\nikon_he\`
+  (branch `nikon-he-decoder`); target: `rawler/src/decompressors/ticoraw/`.
+- **Ported so far (16 ticoraw tests green):** `bit_reader`, `subband_config`,
+  `predict_lut`, `picture_header`. Header/framing verified on real HE + HE\* files.
 
 ## 10. Session log
 
