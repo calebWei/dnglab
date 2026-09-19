@@ -125,7 +125,7 @@ Foundational → integration. Tick as completed; keep the "Next action" pointer 
 **Codec port (`decompressors/ticoraw/…`)**
 - [x] `bit_reader` (MSB bit pump) — ported + unit tested
 - [ ] `gtli_table`, `iqx_iqp_lut_data`, `predict_lut` (pure data/LUTs)
-- [ ] `subband_config` (layout math: `compute_subband_layout`, `compute_buf_stripe_ints`, `compute_kband`)
+- [x] `subband_config` (`compute_subband_layout`) — ported + tested; still need `compute_buf_stripe_ints`, `compute_kband` (defined elsewhere in ref — locate)
 - [ ] `gcli_decode`, `coefficient_decode`, `dequantize`
 - [ ] `precinct_header`, `precinct_decode`, `predecessor`
 - [ ] `idwt_horizontal`, `idwt_vertical`
@@ -158,10 +158,14 @@ Foundational → integration. Tick as completed; keep the "Next action" pointer 
 - **Commits on `feat/nikon-he-support`:** scaffold + roadmap + (this) plan.
 - **`decode_ticoraw` today:** parses SOC/CAP/PIH, logs geometry, returns a WIP
   error. No pixels yet.
-- **▶ NEXT ACTION:** begin the codec port at `bit_reader` (§7), then LUT tables
-  and `subband_config`. Read the matching files under
-  `D:\_repos\_ref_libraw_he\src\decoders\nikon_he\` and translate faithfully to
-  Rust in `rawler/src/decompressors/ticoraw/`.
+- **▶ NEXT ACTION:** port the pure-data LUT modules (`gtli_table`,
+  `iqx_iqp_lut_data`, `predict_lut`), then the entropy stages (`gcli_decode`,
+  `coefficient_decode`, `dequantize`). `compute_buf_stripe_ints` / `compute_kband`
+  are referenced by `decode.cpp` but not in `subband_config.cpp` — find their
+  definitions (likely `tile`/`precinct`) while porting those. Reference files:
+  `D:\_repos\_ref_libraw_he\src\decoders\nikon_he\`; target:
+  `rawler/src/decompressors/ticoraw/`.
+- **Ported so far:** `bit_reader`, `subband_config` (both unit-tested, 7 tests green).
 
 ## 10. Session log
 
