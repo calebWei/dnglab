@@ -274,7 +274,7 @@ Foundational → integration. Tick as completed; keep the "Next action" pointer 
 | Date       | Session | Summary |
 |------------|---------|---------|
 | 2026-09-19 | 1       | Diagnosed RapidRAW's dark HE\* preview fallback; identified format as JPEG-XS/TicoRAW; installed toolchain; created branch + scaffold (marker/PIH parser, tests); routed HE/HE\* into new path; built ground-truth harness; cloned reference decoder; set up fork/upstream remotes; wrote this plan. No codec code yet. |
-| 2026-09-20 | 2       | Pushed branch to fork (`origin`=calebWei/dnglab). Ported 4 modules, each unit-tested (16 ticoraw tests green): `bit_reader`, `subband_config`, `predict_lut`, `picture_header`. Switched reference base to `nikon-he-decoder` branch (has `picture_header`/`gtli_from_weights`; production was missing it). Unified `decode_ticoraw` on the new parser; **verified header/framing on real HE + HE\*** (precinct_offset=155=0x9B, supported=true). Installed helper tools (cmake, ninja, imagemagick, exiftool); confirmed HE vs HE\* via exiftool. Documented §6a per-module workflow + oracle-harness plan. Commits through `c79c39b6` pushed; doc/tooling commit follows. Then built the oracle harness (`tools/nikon_he_oracle`, CMake+MSVC): header parses on our files, but **reference decode SEGFAULTS on the Nikon Z50 II (DX, 5600×3728) samples** in `decode_precinct` (p=0) — reference validated only on FX bodies. Identified camera via exiftool; confirmed no hardcoded FX dims (DX = fixable bug). Opened §11 decision (debug DX vs get an FX sample). |
+| 2026-09-20 | 2       | Pushed branch to fork (`origin`=calebWei/dnglab). Ported 4 modules, each unit-tested (16 ticoraw tests green): `bit_reader`, `subband_config`, `predict_lut`, `picture_header`. Switched reference base to `nikon-he-decoder` branch (has `picture_header`/`gtli_from_weights`; production was missing it). Unified `decode_ticoraw` on the new parser; **verified header/framing on real HE + HE\*** (precinct_offset=155=0x9B, supported=true). Installed helper tools (cmake, ninja, imagemagick, exiftool); confirmed HE vs HE\* via exiftool. Documented §6a per-module workflow + oracle-harness plan. Commits through `c79c39b6` pushed; doc/tooling commit follows. Then built the oracle harness (`tools/nikon_he_oracle`, CMake+MSVC): header parses on our files, but **reference decode SEGFAULTS on the Nikon Z50 II (DX, 5600×3728) samples** in `decode_precinct` (p=0) — reference validated only on FX bodies. Identified camera via exiftool; confirmed no hardcoded FX dims (DX = fixable bug). Opened §11 decision (debug DX vs get an FX sample). Then (per user: debug DX) root-caused the crash (§12): `parse_precinct_header` returns false on DX because the per-LB significance substream size is hardcoded `sig=f20=11` but the real DX value is 12 for the lift LBs (and differs for the LL LB) — `sig` is per-LB, not a global `f20`. Mini-header bit layout is correct. Saved analysis tooling (`tools/nikon_he_oracle/analysis/pp_boundary.py`). Next: derive the per-LB sig formula, patch the reference, verify oracle vs Adobe, then port. |
 
 <!-- Append a new row per session. Keep §9 "Next action" current. -->
 
@@ -295,3 +295,42 @@ The reference crashes on our Nikon Z50 II (DX) files (§8). Options:
 
 Tooling to bisect is ready: `tools/nikon_he_oracle` (add per-stage `fprintf`
 dumps to the reference to compare against Rust stage-by-stage).
+
+## 12. DX debug findings (2026-09-20) — ROOT CAUSE LOCALIZED
+
+Debugging the crash on `DSC_8070` (Z50 II HE) via the oracle harness (trace edits
+to the ref, since reverted) pinned the DX incompatibility:
+
+- The crash is a **secondary** effect: `parse_precinct_header` **returns false**
+  for DX, then `decode_tile` mishandles the failed precinct and segfaults in its
+  tail/`memcpy`. Root cause is the header parse, not the entropy math.
+- **Root cause: the per-LB significance (`sig`) substream size is wrong for DX.**
+  The reference hardcodes `sig = f20 = ceil(image_width/2 / 256)` (= **11** for our
+  2800 half-width) for every LB. The real DX values differ, so every LB boundary
+  after LB0 drifts and the parse overflows.
+- **The 7-byte LB mini-header bit layout is CORRECT for DX**
+  (`[1 f20_sign][20 data][20 gcli][15 sign]`, big-endian): extracted values are
+  sane (LB0 data=581 gcli=233 sign=225; LB1 data=573 gcli=231 sign=237).
+- **Measured true boundaries** (precinct 0, size 8387, Bp=7 Br=17), by scanning for
+  real `0x00`-led headers (`tools/nikon_he_oracle/analysis/pp_boundary.py`):
+  - LB0 header @off 12 → real LB1 header @off **1070** ⇒ LB0 region = 1058 = 7 (hdr)
+    + 1051 (payload); payload − (data+gcli+sign=1039) ⇒ **sig = 12** (not 11).
+  - LB1 @1070 ⇒ **sig = 12**. LB2 (the LL LB, sb 12) has a **different** sig.
+  - So `sig` is **per-LB / per-LB-type**, likely derived from the LB's
+    significance-group count — NOT a single global `f20`.
+
+### Next step to crack DX (resume here)
+
+1. Derive the exact per-LB `sig`-size formula. Hypotheses to test with
+   `pp_boundary.py` across several precincts of `DSC_8070`:
+   - `sig = ceil(total_ng_in_lb / 8)` or `ceil(groups_at_level / 8)` per LB;
+   - relate LB0/LB1 (5-level lift, sig=12) and the LL LB (sig=?) to their ng.
+   Confirm the formula makes **all 8 LBs parse and sum exactly to `total_size`**,
+   across many precincts (and for HE\* 0566/0567 too).
+2. Patch `parse_precinct_header` (`lb_sig_bytes[lb] = <formula>`), rebuild the
+   oracle, and check `decode: success=1`; then `magick compare` the oracle PGM vs
+   `target/gt/DSC_8070.pgm`. Expect further DX deltas possible downstream.
+3. Also make `decode_tile` fail gracefully on a bad precinct (defensive), though
+   fixing `sig` should avoid that path.
+4. Only once the **reference decodes DX correctly** do we port the corrected logic
+   to Rust (the Rust `sig` formula must match the fix).
