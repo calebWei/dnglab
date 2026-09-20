@@ -42,6 +42,7 @@
 //! in yogthos/LibRaw PR #826).
 
 mod bit_reader;
+mod coefficient_decode;
 mod gcli_decode;
 mod gtli_table;
 mod iqx_iqp_lut_data;
