@@ -373,9 +373,32 @@ be far enough along to validate (B). Right now (A) has an open blocker (DX).
     fetch them; until then these two tests only pass locally with `RAWDB_CACHE`
     pointing at the files. Set line `Nikon/Z 50 II/raw_modes` is already present
     in `supported_rawdb_sets.txt`.
-- **▶ NEXT (post-port polish, item 2):** confirm the CFA orientation / black-level
-  / whitebalance metadata path in `nef.rs` produces a correct DNG (compare a full
-  `dnglab convert` against Adobe DNG); then upstream. Reference:
+- **✅ POST-PORT ITEM 2 DONE — `dnglab convert` DNG validated against Adobe.**
+  Converted all three real files (`dnglab convert`) and compared the output DNG
+  against the Adobe DNG both at the **tag level** and the **pixel level**:
+  - **Metadata (tag) parity — all raw-relevant tags match Adobe exactly:**
+    `ActiveArea` 0,0,3728,5600 · `CFAPattern` 0,1,1,2 (RGGB) · `CFARepeatPatternDim`
+    2,2 · `CFAPlaneColor` 0,1,2 · `CFALayout` 1 · **`Orientation`** (1 for
+    8070/0567, **8 for 0566** — the rotated case, matched) · `WhiteLevel` 15892 ·
+    `BlackLevel` 1008 (we write `1008/1`, Adobe `258048/256` — same value) ·
+    `AsShotNeutral` (matches to ~1e-5; rational-precision only) · `ColorMatrix1/2`
+    identical · `CalibrationIlluminant1/2` 17/21. The only diffs are cosmetic:
+    rational-vs-SHORT encoding of `DefaultCrop*`/`BlackLevel`, a smaller embedded
+    thumbnail (180×120 vs 256×171), and an omitted `AnalogBalance` (DNG default is
+    identity `[1,1,1]`, which is exactly what Adobe writes). **No code change
+    needed — the `nef.rs` metadata path is correct.**
+  - **Pixel fidelity through the full convert pipeline** (our DNG raw vs Adobe
+    ground-truth PGM): RMSE **0.57 HE** (DSC_8070), **0.45 / 0.91 HE\***
+    (0566/0567) — reproducing the reference decoder's own Adobe gap (§8), since
+    our decode is bit-exact vs the reference. The low RMSE on the Orientation=8
+    file confirms the raw plane is stored in sensor orientation like Adobe (no
+    mis-rotation). Tooling: `scratchpad/dngtags.py` (throwaway DNG tag dumper).
+- **▶ NEXT (post-port polish, item 3 — final):** upstream. The full decoder,
+  integration tests (item 1) and DNG validation (item 2) are done. Prepare the PR
+  to `upstream` (dnglab/dnglab): squash/organize the `feat/nikon-he-support`
+  history, ensure the `dx_sig_fix` provenance and reference license (LGPL-2.1 /
+  CDDL, clean-room) are documented, and coordinate the two Z 50 II HE/HE\* sample
+  uploads to `rawdb.dnglab.org` (item-1 follow-up) so CI can fetch them. Reference:
   `D:\_repos\_ref_libraw_he\src\decoders\nikon_he\` (branch `nikon-he-decoder`,
   with `dx_sig_fix.patch` applied); target: `rawler/src/decompressors/ticoraw/`.
 
@@ -412,6 +435,9 @@ be far enough along to validate (B). Right now (A) has an open blocker (DX).
 | 2026-09-20 | 4       | **Ported `bayer` (workstream B, module 16/…) — final reconstruction.** Faithful port of `nikon_he_bayer.{h,cpp}`: `step1_merge_4_to_2` (2D inverse 5/3 merge of the 4 sub-band planes LL/LH/HH/HL → L/H with `>>3` lifting, c=0 boundary + carry + interior columns, whole-sample-symmetric row clamps) and `step2_bayer_rows` (final inverse + tone-curve LUT → two u16 Bayer rows per stripe row; `midpoint_bias=32768`, `lut_rounding=2`, `>>2`, 14-bit clamp to 16383). Planes are passed as whole source buffers + per-plane base offsets with signed row indexing, so the driver can pass image-wide `tile_coeff_buf`/`step1_scratch` and the cross-tile row `-1`/`w_rows` reads land in the neighbouring tile (the reference's raw-pointer behaviour, without unsafe). **Oracle bit-exact cross-check** (`NIKON_HE_BAYER_DUMP`): runs step1+step2 on a real 8×16 window of tile 0's coeff planes (from the committed `tile0_8070.coeff.bin`) with `is_first=is_last=true` — exercising both row clamps and the left/right column boundaries — and reproduces the reference's step1 L/H (128+128) and step2 Bayer pixels (512) exactly. Fixture `ticoraw/testdata/bayer_window_8070.txt`. Reference capture reverted (dx_sig_fix intact). 57 ticoraw tests green; rustfmt-clean; module clippy-clean. Next (LAST module): top-level `decode_nikon_he_image` 3-pass driver → hook into `decode_ticoraw`; oracle-validate the full Bayer image. |
 
 | 2026-09-20 | 4       | **Ported `decode_nikon_he_image` (workstream B, module 16/16 — THE CAPSTONE) and wired the decoder into `decode_ticoraw`.** Faithful port of `nikon_he_decode.{h,cpp}`: `walk_precincts` (24-bit size, `sz+12` stride, 6-byte pad after every 16th, zero-size sentinel) + the 3-pass driver (pass 1 `decode_tile`×n_tiles into the image-wide `tile_coeff_buf`; pass 2 `step1_merge_4_to_2`→`step1_scratch`; pass 3 `step2_bayer_rows`→ u16 Bayer — passes 2/3 rely on the whole-buffer + base-offset plane addressing for cross-tile row `-1`/`w_rows` reads). Fresh `PrecinctPredecessorState` per tile (overlap carries no prediction state). `decode_ticoraw` now parses the PIH, runs the decode into a `PixU16`, and honours `dummy` (dimensions-only). Ported `LayoutInfo`/`ph` explicitly (no thread-local). 2 hermetic unit tests for the precinct walk (stride+pad+sentinel; short-buffer stop) + an opt-in `e2e_full_image_matches_reference` (env-gated on the local strip + reference PGM). **CAPSTONE RESULT: the Rust decoder is byte-identical to the reference C++ on real files — 0 pixel mismatches across the full 5600×3728 image (59 tiles, 1048 precincts) on 3 files (1 HE `DSC_8070`, 2 HE\* `_0566`/`_0567`).** No fixture committed for the e2e test (multi-MB strip is external; run with `NIKON_HE_STRIP`/`NIKON_HE_REF_PGM`). Reference capture reverted (dx_sig_fix intact). 59 ticoraw tests green (+1 ignored e2e); rustfmt-clean; module clippy-clean. **Workstream B (full module port) is COMPLETE.** Next: rawler-level NEF integration test + DNG-vs-Adobe validation, then upstream. |
+
+| 2026-09-20 | 5       | **Post-port item 1 — wired real HE/HE\* NEFs into rawler's integration tests.** Registered two Z 50 II DX samples in the standard **rawdb** harness (`tests/rawdb/mod.rs`): `Z50II_DX_HE.NEF` (HE, code 13) + `Z50II_DX_HEstar.NEF` (HE\*, code 14), each with the five committed golden sidecars (`.analyze.yaml` + raw/full/preview/thumbnail `.digest`) generated by `dnglab analyze` from the now-bit-exact decoder. Both tests pass end-to-end through the public path (`NefDecoder`→`decode_ticoraw`→ digests + metadata YAML + `dnglab convert`). **Fixed a real wiring bug:** `decode_ticoraw`'s `dummy` branch returned `PixU16::new` (initialized), tripping `RawImage::new`'s `assert_eq!(dummy,!is_initialized())` on the `analyze --meta` path — now `PixU16::new_uninit`. Maintainer follow-up: upload the two NEFs to `rawdb.dnglab.org` (`Nikon/Z 50 II/raw_modes/`) for CI; set line already listed. Commit `ad9c27c9` pushed. |
+| 2026-09-20 | 5       | **Post-port item 2 — validated `dnglab convert` DNG against Adobe.** Converted all three real files and compared output DNG vs Adobe DNG at tag + pixel level. **All raw-relevant DNG tags match Adobe exactly** — `ActiveArea` 0,0,3728,5600, `CFAPattern` 0,1,1,2 (RGGB), `CFARepeatPatternDim` 2,2, `Orientation` (incl. **8** for the rotated `0566`), `WhiteLevel` 15892, `BlackLevel` 1008 (`1008/1` vs Adobe `258048/256`), `AsShotNeutral` (to ~1e-5), `ColorMatrix1/2`, `CalibrationIlluminant1/2` 17/21; the only diffs are cosmetic (rational-vs-SHORT crop/black encoding, smaller embedded thumbnail, omitted `AnalogBalance` = identity default). **Pixel fidelity through convert:** our-DNG-raw vs Adobe-PGM RMSE 0.57 HE / 0.45,0.91 HE\* — reproducing the reference decoder's own Adobe gap (§8), and the low RMSE on the Orientation=8 file confirms sensor-orientation storage (no mis-rotation). **No code change needed — `nef.rs` metadata path is correct.** Next: item 3 — upstream. |
 
 <!-- Append a new row per session. Keep §9 "Next action" current. -->
 
