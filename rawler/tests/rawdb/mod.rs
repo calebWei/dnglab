@@ -1746,6 +1746,8 @@ mod nikon {
   mod z_50_ii_raw_modes {
     super::super::rawdb_test_file!("Nikon", "Z 50 II", z50ii_16x9_lossless_nef, "raw_modes/Z50II_16x9_lossless.NEF");
     super::super::rawdb_test_file!("Nikon", "Z 50 II", z50ii_1x1_lossless_nef, "raw_modes/Z50II_1x1_lossless.NEF");
+    super::super::rawdb_test_file!("Nikon", "Z 50 II", z50ii_dx_he_nef, "raw_modes/Z50II_DX_HE.NEF");
+    super::super::rawdb_test_file!("Nikon", "Z 50 II", z50ii_dx_hestar_nef, "raw_modes/Z50II_DX_HEstar.NEF");
     super::super::rawdb_test_file!("Nikon", "Z 50 II", z50ii_dx_lossless_nef, "raw_modes/Z50II_DX_lossless.NEF");
   }
   mod z_6_raw_modes {

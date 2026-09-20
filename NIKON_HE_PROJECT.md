@@ -357,11 +357,25 @@ be far enough along to validate (B). Right now (A) has an open blocker (DX).
   output is byte-identical to the reference C++ decoder on real HE + HE\*** (Z50 II,
   5600×3728, 59 tiles / 1048 precincts, 0/20,876,800 pixel mismatches on 3 files —
   1 HE, 2 HE\*), verified by the opt-in `e2e_full_image_matches_reference` test.
-- **▶ NEXT (post-port polish, no longer per-module):** wire real HE/HE\* NEF
-  fixtures into rawler's decoder integration tests (end-to-end via `decode_ticoraw`
-  from an actual `.NEF`); confirm the CFA orientation / black-level / whitebalance
-  metadata path in `nef.rs` produces a correct DNG (compare a full `dnglab convert`
-  against Adobe DNG); then upstream. Reference:
+- **✅ POST-PORT ITEM 1 DONE — real HE/HE\* NEFs wired into rawler's integration
+  tests.** Registered two Z 50 II DX samples in the standard **rawdb** harness
+  (`tests/rawdb/mod.rs`): `Z50II_DX_HE.NEF` (HE, code 13) and
+  `Z50II_DX_HEstar.NEF` (HE\*, code 14). Each carries the five committed golden
+  sidecars (`.analyze.yaml` + raw/full/preview/thumbnail `.digest`) frozen from
+  the now bit-exact decoder. Both tests pass end-to-end through the public path
+  (`NefDecoder` → `decode_ticoraw` → decode → digests + metadata YAML + `dnglab
+  convert` to DNG). Fixed a real wiring bug found along the way: the `dummy`
+  branch of `decode_ticoraw` returned an *initialized* `PixU16::new` and tripped
+  `RawImage::new`'s `assert_eq!(dummy, !is_initialized())` on the `analyze --meta`
+  path — now returns `PixU16::new_uninit`.
+  - **Maintainer follow-up (not doable from the fork):** the two sample NEFs must
+    be uploaded to `rawdb.dnglab.org` under `Nikon/Z 50 II/raw_modes/` so CI can
+    fetch them; until then these two tests only pass locally with `RAWDB_CACHE`
+    pointing at the files. Set line `Nikon/Z 50 II/raw_modes` is already present
+    in `supported_rawdb_sets.txt`.
+- **▶ NEXT (post-port polish, item 2):** confirm the CFA orientation / black-level
+  / whitebalance metadata path in `nef.rs` produces a correct DNG (compare a full
+  `dnglab convert` against Adobe DNG); then upstream. Reference:
   `D:\_repos\_ref_libraw_he\src\decoders\nikon_he\` (branch `nikon-he-decoder`,
   with `dx_sig_fix.patch` applied); target: `rawler/src/decompressors/ticoraw/`.
 

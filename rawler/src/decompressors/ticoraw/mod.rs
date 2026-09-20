@@ -101,9 +101,10 @@ pub fn decode_ticoraw(src: &[u8], width: usize, height: usize, bps: usize, dummy
     log::warn!("Nikon HE: PIH dims {}x{} disagree with TIFF {}x{}", ph.hdr_width, ph.hdr_height, width, height);
   }
 
-  // In dummy mode the caller only wants dimensions, not pixels.
+  // In dummy mode the caller only wants dimensions, not pixels. The image must
+  // stay *uninitialized* — `RawImage::new` asserts `dummy == !is_initialized()`.
   if dummy {
-    return Ok(PixU16::new(width, height));
+    return Ok(PixU16::new_uninit(width, height));
   }
 
   if ph.precinct_offset >= src.len() {
