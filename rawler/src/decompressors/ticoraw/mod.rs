@@ -43,6 +43,7 @@
 
 mod bit_reader;
 mod coefficient_decode;
+mod dequantize;
 mod gcli_decode;
 mod gtli_table;
 mod iqx_iqp_lut_data;

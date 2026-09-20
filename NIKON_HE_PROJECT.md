@@ -249,7 +249,12 @@ Foundational → integration. Tick as completed; keep the "Next action" pointer 
       + tested (5 tests incl. an **oracle bit-exact cross-check** on DSC_8070
       precinct 0 / LB 0: 2804 coefficients across all 6 sub-bands, shared data+sign
       readers). Fixture: `ticoraw/testdata/coeff_lb0_8070.txt`.
-- [ ] `dequantize`
+- [x] `dequantize` (deadzone-midpoint reconstruction via 16-entry scale table +
+      `w4=4` tone shift; `dequantize_coefficient` / `_ll_coefficient` /
+      `_coefficient_array`) — ported + tested (5 tests incl. an **oracle bit-exact
+      cross-check** on DSC_8070 precinct 0 / LB 0: pre→post dequant for all 2804
+      coefficients). Note: the array path applies the uniform formula to all bands
+      (the reference ignores `is_ll_band`). Fixture: `ticoraw/testdata/dequant_lb0_8070.txt`.
 - [ ] `precinct_header`, `precinct_decode`, `predecessor`
 - [ ] `idwt_horizontal`, `idwt_vertical`
 - [ ] `tile` (`decode_tile`)
@@ -308,9 +313,10 @@ be far enough along to validate (B). Right now (A) has an open blocker (DX).
   (`tools/nikon_he_oracle/dx_sig_fix.patch`), matching Adobe to RMSE ≈ 0.57 (§8,
   §12). Entropy-stage modules can now be oracle-validated on DX. **Workstream (A)
   is done** — remaining optional: per-stage intermediate dumps for finer diffing.
-- **(B) Ported + tested (32 ticoraw tests green):** `bit_reader`, `subband_config`,
+- **(B) Ported + tested (37 ticoraw tests green):** `bit_reader`, `subband_config`,
   `predict_lut`, `picture_header`, `gtli_table`, `iqx_iqp_lut_data`, `gcli_decode`,
-  `coefficient_decode` (the last two **oracle bit-exact-validated** on real HE data).
+  `coefficient_decode`, `dequantize` (the last three **oracle bit-exact-validated**
+  on real HE data — the full per-sub-band entropy chain is now ported).
   Header/framing
   **verified on real HE + HE\*** (5600×3728, comps=4, nbands=25,
   precinct_offset=155=0x9B, supported=true). `decode_ticoraw` parses the picture
@@ -318,8 +324,8 @@ be far enough along to validate (B). Right now (A) has an open blocker (DX).
 - **Foundational workstream (A) is COMPLETE**, including the DX fix — oracle
   decodes HE + HE\* on the Z50 II, matching Adobe (RMSE ≈ 0.57).
 - **▶ NEXT ACTION (resume module port, workstream B, §6a lifecycle, ONE at a time,
-  oracle-validated):** `gcli_decode` + `coefficient_decode` done (oracle bit-exact);
-  next entropy stage is `dequantize`, then
+  oracle-validated):** the per-sub-band entropy chain (`gcli_decode` +
+  `coefficient_decode` + `dequantize`) is done (all oracle bit-exact). Next is
   `precinct_header` **with the DX `sig` fix baked in** (formula in §12), then
   `precinct_decode`/`predecessor`, the IDWTs, `tile` (+ `compute_buf_stripe_ints`/
   `compute_kband` from `nikon_he_tile.h`), `bayer`, and the 3-pass driver.
@@ -342,6 +348,8 @@ be far enough along to validate (B). Right now (A) has an open blocker (DX).
 | 2026-09-20 | 4       | **Ported `gcli_decode` (workstream B, module 7/… — first entropy stage).** Faithful port of `nikon_he_gcli_decode.{h,cpp}`: significance bit per 8-group block + per-group unary deltas; modes 0x71 (zero-pred, `gcli=gtli+u`) and 0x73 (vert-pred via prediction LUT, baseline `max(prev,gtli)`). 5 synthetic unit tests + **1 oracle bit-exact cross-check**: established the oracle-capture pattern — added an env-gated (`NIKON_HE_GCLI_DUMP`) dump to the reference `decode_precinct`, rebuilt the oracle, decoded real DSC_8070, and captured precinct 0 / LB 0 (shared sig+gcli readers, all 6 sub-bands / 701 groups, mode 0x73, zero prev). The Rust port reproduces the reference output byte-for-byte (fixture `ticoraw/testdata/gcli_lb0_8070.txt`). Reverted the temporary reference capture (dx_sig_fix intact). 27 ticoraw tests green; rustfmt-clean; module clippy-clean (crate-wide unwrap/format lints are pre-existing toolchain noise). Next: `coefficient_decode`. |
 
 | 2026-09-20 | 4       | **Ported `coefficient_decode` (workstream B, module 8/…).** Faithful port of `nikon_he_coefficient_decode.{h,cpp}`: `unpack_coefficient_magnitudes` (per group, `gcli-gtli` bit-planes as nibbles, MSB-first, distributed bit3..0 → coeff0..3, then `<< gtli`) and `apply_sign_bits` (one bit per non-zero coeff). 4 synthetic unit tests + **1 oracle bit-exact cross-check**: reused the capture pattern (`NIKON_HE_COEFF_DUMP`) to dump precinct 0 / LB 0's data+sign buffers and the final signed coefficients; the Rust port reproduces all **2804 coefficients** (6 sub-bands sharing one data + one sign reader) byte-for-byte. Fixture `ticoraw/testdata/coeff_lb0_8070.txt`. Reference capture reverted (dx_sig_fix intact). 32 ticoraw tests green; rustfmt-clean (project max_width=160); module clippy-clean. Next: `dequantize` (finishes the per-sub-band entropy chain). |
+
+| 2026-09-20 | 4       | **Ported `dequantize` (workstream B, module 9/… — completes the per-sub-band entropy chain).** Faithful port of `nikon_he_dequantize.{h,cpp}`: `dequantize_coefficient` (deadzone-midpoint: `mag = |coef|>>gtli`, `(mag * scale_table[bpc-1]) >> (16-gtli) << 4`, sign-preserving; u64 intermediate), the LL helper (ported for fidelity; unused — the array path ignores `is_ll_band` and applies the uniform formula to all bands), and `dequantize_coefficient_array`. 4 synthetic unit tests + **1 oracle bit-exact cross-check** (`NIKON_HE_DEQ_DUMP`): captured pre- and post-dequant coefficients for precinct 0 / LB 0; the Rust port reproduces all 2804 post-dequant values. Fixture `ticoraw/testdata/dequant_lb0_8070.txt`. Reference capture reverted (dx_sig_fix intact). 37 ticoraw tests green; rustfmt-clean; module clippy-clean. Next: `precinct_header` (bake in the DX `sig` formula from §12), then `precinct_decode`/`predecessor` — the integration point to oracle-validate the full per-precinct bufA/bufB scatter. |
 
 <!-- Append a new row per session. Keep §9 "Next action" current. -->
 
