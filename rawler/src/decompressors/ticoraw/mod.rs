@@ -48,6 +48,7 @@ mod gcli_decode;
 mod gtli_table;
 mod iqx_iqp_lut_data;
 mod picture_header;
+mod precinct_decode;
 mod precinct_header;
 mod predecessor;
 mod predict_lut;
