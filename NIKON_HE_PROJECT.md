@@ -260,7 +260,13 @@ Foundational → integration. Tick as completed; keep the "Next action" pointer 
       formula baked in**) — ported + tested (5 tests incl. an **oracle bit-exact
       cross-check** re-parsing real DSC_8070 precinct 0: total_size/Bp/Br/28 Dpb +
       all 8 LBs' sig/gcli/data/sign/offsets). Fixture: `ticoraw/testdata/precinct_hdr_p0_8070.txt`.
-- [ ] `precinct_decode`, `predecessor`
+- [x] `predecessor` (`PrecinctPredecessorState`: cross-band GCLI rotation for the LL
+      bands sb 12/23, `get_previous_gcli`/`save_gcli`/`advance_precinct`/
+      `reset_gcli_state`, `should_reset_gcli`) — ported + tested (7 tests: rotation
+      semantics both directions, advance zeroing, precinct-16 reset, insig flag).
+      Rust models the reference's pointer-aliased rotation buffers directly. Full
+      bit-exact validation lands at `precinct_decode` (it drives the real decode).
+- [ ] `precinct_decode`
 - [ ] `idwt_horizontal`, `idwt_vertical`
 - [ ] `tile` (`decode_tile`)
 - [ ] `bayer` (`step1_merge_4_to_2`, `step2_bayer_rows`)
@@ -318,11 +324,12 @@ be far enough along to validate (B). Right now (A) has an open blocker (DX).
   (`tools/nikon_he_oracle/dx_sig_fix.patch`), matching Adobe to RMSE ≈ 0.57 (§8,
   §12). Entropy-stage modules can now be oracle-validated on DX. **Workstream (A)
   is done** — remaining optional: per-stage intermediate dumps for finer diffing.
-- **(B) Ported + tested (42 ticoraw tests green):** `bit_reader`, `subband_config`,
+- **(B) Ported + tested (49 ticoraw tests green):** `bit_reader`, `subband_config`,
   `predict_lut`, `picture_header`, `gtli_table`, `iqx_iqp_lut_data`, `gcli_decode`,
-  `coefficient_decode`, `dequantize`, `precinct_header` (the last four **oracle
-  bit-exact-validated** on real HE data; `precinct_header` carries the DX `sig` fix).
-  The full per-sub-band entropy chain + precinct framing are now ported.
+  `coefficient_decode`, `dequantize`, `precinct_header`, `predecessor` (entropy
+  stages + `precinct_header` **oracle bit-exact-validated** on real HE data;
+  `precinct_header` carries the DX `sig` fix). Everything needed to decode one
+  precinct's sub-bands now exists; `precinct_decode` will wire them together.
   Header/framing
   **verified on real HE + HE\*** (5600×3728, comps=4, nbands=25,
   precinct_offset=155=0x9B, supported=true). `decode_ticoraw` parses the picture
@@ -330,11 +337,11 @@ be far enough along to validate (B). Right now (A) has an open blocker (DX).
 - **Foundational workstream (A) is COMPLETE**, including the DX fix — oracle
   decodes HE + HE\* on the Z50 II, matching Adobe (RMSE ≈ 0.57).
 - **▶ NEXT ACTION (resume module port, workstream B, §6a lifecycle, ONE at a time,
-  oracle-validated):** the per-sub-band entropy chain (`gcli_decode` +
-  `coefficient_decode` + `dequantize`) and `precinct_header` (with the DX `sig`
-  fix) are done — all oracle bit-exact. Next is `predecessor` (cross-band GCLI
-  state) then `precinct_decode` (the integration point to oracle-validate the full
-  per-precinct bufA/bufB scatter), the IDWTs, `tile` (+ `compute_buf_stripe_ints`/
+  oracle-validated):** the per-sub-band entropy chain, `precinct_header` (DX `sig`
+  fix), and `predecessor` are done. Next is **`precinct_decode`** — the integration
+  module that wires header + entropy chain + predecessor together and scatters into
+  bufA/bufB; oracle-validate the full per-precinct bufA/bufB output there. Then the
+  IDWTs, `tile` (+ `compute_buf_stripe_ints`/
   `compute_kband` from `nikon_he_tile.h`), `bayer`, and the 3-pass driver.
   Validate each against the fixed oracle (bit-exact for HE). Reference:
   `D:\_repos\_ref_libraw_he\src\decoders\nikon_he\` (branch `nikon-he-decoder`,
@@ -359,6 +366,8 @@ be far enough along to validate (B). Right now (A) has an open blocker (DX).
 | 2026-09-20 | 4       | **Ported `dequantize` (workstream B, module 9/… — completes the per-sub-band entropy chain).** Faithful port of `nikon_he_dequantize.{h,cpp}`: `dequantize_coefficient` (deadzone-midpoint: `mag = |coef|>>gtli`, `(mag * scale_table[bpc-1]) >> (16-gtli) << 4`, sign-preserving; u64 intermediate), the LL helper (ported for fidelity; unused — the array path ignores `is_ll_band` and applies the uniform formula to all bands), and `dequantize_coefficient_array`. 4 synthetic unit tests + **1 oracle bit-exact cross-check** (`NIKON_HE_DEQ_DUMP`): captured pre- and post-dequant coefficients for precinct 0 / LB 0; the Rust port reproduces all 2804 post-dequant values. Fixture `ticoraw/testdata/dequant_lb0_8070.txt`. Reference capture reverted (dx_sig_fix intact). 37 ticoraw tests green; rustfmt-clean; module clippy-clean. Next: `precinct_header` (bake in the DX `sig` formula from §12), then `precinct_decode`/`predecessor` — the integration point to oracle-validate the full per-precinct bufA/bufB scatter. |
 
 | 2026-09-20 | 4       | **Ported `precinct_header` (workstream B, module 10/…) — with the DX fix baked in.** Faithful port of `nikon_he_precinct_header.{h,cpp}` incl. the project's `dx_sig_fix`: `compute_lb_sig_bytes` (per-LB significance = `ceil(Σ ceil(ng_sb/8)/8)`), `compute_f20`, and `parse_precinct_header` (24-bit total_size, Bp/Br, 28×2-bit Dpb, 8 interleaved 7-byte LB mini-headers `[f20_sign:1][data:20][gcli:20][sign:15]`, walking substream payloads). 4 unit tests (DX sig = `[12,12,11,12,11,11,11,11]` for 5600; f20 DX/FX; mini-header bit extraction; too-short) + **1 oracle bit-exact cross-check** (`NIKON_HE_PHDR_DUMP`): re-parses real DSC_8070 precinct 0 and matches every field (total_size=8387, Bp=7, Br=17, all 28 Dpb, all 8 LBs' sig/gcli/data/sign counts + offsets — LB0 sig=12/gcli=233/data=581/sign=225, consistent with the earlier entropy fixtures). Fixture `ticoraw/testdata/precinct_hdr_p0_8070.txt`. Reference capture reverted (dx_sig_fix intact). 42 ticoraw tests green; rustfmt-clean; module clippy-clean. Next: `predecessor` (cross-band GCLI state), then `precinct_decode`. |
+
+| 2026-09-20 | 4       | **Ported `predecessor` (workstream B, module 11/…).** Faithful port of `nikon_he_predecessor.{h,cpp}`: `PrecinctPredecessorState` managing cross-band GCLI prediction for the LL bands (sb 12 ← sb 23 of the previous precinct; sb 23 ← sb 12 of the current precinct) via two rotation buffers, plus `get_previous_gcli`/`save_gcli`/`advance_precinct` (zeros the sb 12 buffer, keeps sb 23)/`reset_gcli_state`/`set_fully_insig`, and the free `should_reset_gcli` (precinct 16). Rust models the reference's raw-pointer aliasing (`gcli_store[12]→buf_b`, `[23]→buf_a`) by routing sb 12/23 through the rotation buffers directly — behaviorally identical, no `unsafe`; ownership removes the C++ `destroy`. 7 unit tests (both rotation directions, advance zeroing, precinct-16 reset, insig flag, reset condition). Its bit-exact validation lands at `precinct_decode` (it drives the real decode). 49 ticoraw tests green; rustfmt-clean; clippy-clean. Next: `precinct_decode` — the integration milestone (oracle-validate the full per-precinct bufA/bufB scatter). |
 
 <!-- Append a new row per session. Keep §9 "Next action" current. -->
 
