@@ -272,7 +272,9 @@ Foundational → integration. Tick as completed; keep the "Next action" pointer 
       per-pass driver → LB-ordered h_out. Oracle bit-exact: precinct-0 h_out A+B.)
 - [x] `idwt_vertical` (per-LB ver-lift state machine + carry; path A/B entry.
       Oracle bit-exact: 260-call real trace covering all state transitions.)
-- [ ] `tile` (`decode_tile`)
+- [x] `tile` (`decode_tile` + `compute_buf_stripe_ints`/`compute_kband`: stripe
+      orchestrator over 18 precincts, ver-lift bookkeeping, cross-tile overflow.
+      Oracle bit-exact: full tile-0 coeff buffer (372736 ints) + overflow.)
 - [ ] `bayer` (`step1_merge_4_to_2`, `step2_bayer_rows`)
 - [ ] top-level `decode_nikon_he_image` (3-pass driver) → hook into `decode_ticoraw`
 
@@ -345,13 +347,14 @@ be far enough along to validate (B). Right now (A) has an open blocker (DX).
   fix), `predecessor`, **`precinct_decode`** (the integration milestone,
   oracle bit-exact on the full precinct-0 bufA/bufB), **`idwt_horizontal`**
   (oracle bit-exact on precinct-0 `h_out`, both passes), and **`idwt_vertical`**
-  (`ver_lift_lb_step` state machine, oracle bit-exact on a 260-call real trace)
-  are done. Next is **`tile`** (`decode_tile` from `nikon_he_tile.{h,cpp}`, plus
-  the free `compute_buf_stripe_ints`/`compute_kband`) — the stripe orchestrator
-  that drives entropy → horizontal → vertical over a tile's precincts, manages the
-  ver-lift `x1_write_offset` / `memcpy_cursor` and cross-tile `overflow_carry`,
-  and emits `tile_coeff_buf`. Oracle-validate the full tile-0 `tile_coeff_buf`.
-  Then `bayer` and the 3-pass driver.
+  (`ver_lift_lb_step` state machine, oracle bit-exact on a 260-call real trace),
+  and **`tile`** (`decode_tile`, oracle bit-exact on the full tile-0 coeff buffer
+  + overflow) are done. Next is **`bayer`** (`step1_merge_4_to_2` +
+  `step2_bayer_rows` from `nikon_he_bayer.{h,cpp}`) — the final reconstruction
+  stage: merges the 4 LB sub-bands back to L/H, then interleaves into Bayer rows
+  applying the tone-curve LUT (`iqx_iqp_lut`) to produce 16-bit CFA. Oracle-
+  validate the output Bayer pixels. Then the top-level 3-pass driver
+  (`decode_nikon_he_image`) hooked into `decode_ticoraw`.
   Validate each against the fixed oracle (bit-exact for HE). Reference:
   `D:\_repos\_ref_libraw_he\src\decoders\nikon_he\` (branch `nikon-he-decoder`,
   with `dx_sig_fix.patch` applied); target: `rawler/src/decompressors/ticoraw/`.
@@ -383,6 +386,8 @@ be far enough along to validate (B). Right now (A) has an open blocker (DX).
 | 2026-09-20 | 4       | **Ported `idwt_horizontal` (workstream B, module 13/…) — first inverse-DWT stage.** Faithful port of `nikon_he_idwt_horizontal.{h,cpp}`: `idwt53_inverse_one_level` (LeGall 5/3 one-level synthesis — L→even/H→odd interleave, inverse UPDATE then PREDICT with whole-sample-symmetric boundary), `idwt53_horizontal_lift_all` (multi-level, deepest-first, `out`/`work` ping-pong with parity-selected seed so the result lands in `out`), and `idwt_horizontal_pass` (per-pass driver: lift LB 0/1/3, memcpy the LL LB — sb 12 pass A / sb 23 pass B — into the LB-ordered stripe). Ported the ping-pong with `core::mem::swap` on two `&mut [i32]` — no `unsafe`, no `in_buf` mutation (the reference header's "overwrites in_buf" note doesn't match its code; the vertical stage reads `h_out`). Takes `LayoutInfo` explicitly (Rust returns it by value, unlike the C++ `config[0].layout_info`). 1 synthetic unit test (forward-5/3→inverse round-trip) + **1 oracle bit-exact cross-check** (`NIKON_HE_HOUT_DUMP`): chains the real Rust `decode_precinct` on DSC_8070 precinct 0 to build bufA/bufB, runs both horizontal passes, and reproduces the reference's entire `h_out` — pass A (10702 nonzeros) and pass B (9494 nonzeros) — exactly. Fixture `ticoraw/testdata/idwt_horizontal_p0_8070.txt`. Reference capture reverted (dx_sig_fix intact). 52 ticoraw tests green; rustfmt-clean; module clippy-clean. Next: `idwt_vertical` (stateful ver-lift per-LB loop over stripes), oracle-validated. |
 
 | 2026-09-20 | 4       | **Ported `idwt_vertical` (workstream B, module 14/…) — second inverse-DWT stage.** Faithful port of `nikon_he_idwt_vertical.{h,cpp}`: `ver_lift_lb_step`, the per-LB-component 5/3 vertical-lift state machine (phase counter `2→5→7→8→(7→8)*→9→11` path A / `0→1→4→7→…` path B; states 7/8/9 write x1, tail variants at 7/9 with `x0=None`), plus `VerLiftStatePerLb` (owns its x2/x3 carry buffers — the reference held raw pointers into tile-wide arrays), the `ver_lift_state` constants, and the `ver_lift_init_path_a/b` + `ver_lift_should_advance_offset` helpers. `x0` is `Option<&[i32]>` (None = tail flush); `n==0` memcpy-LB calls tick state without touching x0 (guarded via `unwrap_or(&[])`, so the empty loop never indexes). All shifts arithmetic on `i32`. 2 unit tests (n==0 state tick; path-init helpers) + **1 oracle bit-exact cross-check** (`NIKON_HE_VL_DUMP`): replays a 260-call real trace from DSC_8070 — every transition (0→1,1→4,2→5,4→7,5→7,7→8,7→9,8→7,9→11,11→11) — feeding recorded state/x2/x3/x0 and asserting x1 (writing states), x2/x3 carries and next state match. The machine is lane-wise independent, so 8 captured lanes fully exercise the arithmetic. Fixture `ticoraw/testdata/idwt_vertical_calls_8070.txt`. Reference capture reverted (dx_sig_fix intact). 55 ticoraw tests green; rustfmt-clean; module clippy-clean. Next: `tile` (`decode_tile` stripe orchestrator + `compute_buf_stripe_ints`/`compute_kband`), oracle-validate full tile-0 `tile_coeff_buf`. |
+
+| 2026-09-20 | 4       | **Ported `tile` (workstream B, module 15/…) — the stripe orchestrator.** Faithful port of `nikon_he_tile.{h,cpp}`: `decode_tile` drives the per-precinct pipeline over a tile's 18 precincts — entropy (`decode_precinct`) → horizontal IDWT (both passes) → the memcpy-LL copy at `memcpy_cursor + 3*kband` → vertical lift (`run_one_ver_lift_loop` over the 4 LB components, LB strides `[lift_st,lift_st,0,lift_st]`) — then a 2-step partial-tile tail flush, copies the first 32 stripes to `tile_coeff_buf[tile_index*…]`, and saves the next 2 stripes as `overflow_carry`. Handles path-A (tile 0, state 2) vs path-B (tile>0, state 0, seed 2 stripes from overflow, `x1_write_offset`=8) entry and the `skip_pass_a_verlift` for precinct 0 of non-first tiles; `x1_write_offset += 4` when pre-tick state > 5. Plus the free `compute_buf_stripe_ints`/`compute_kband`. Takes `LayoutInfo` explicitly and each `VerLiftStatePerLb` owns its carry (vs the reference's tile-wide array + pointers); `precinct_data: &[&[u8]]` (length = precinct count). **Oracle bit-exact cross-check** (`NIKON_HE_TILE_DUMP`): decodes tile 0 of DSC_8070 and reproduces the reference's **entire tile-0 coefficient buffer (372736 ints) and cross-tile overflow (23296 ints)** exactly. Golden data stored as binary fixtures (the proper golden-file form): `tile0_8070.{meta.txt,precincts.bin,coeff.bin,overflow.bin}` — 151KB real precinct input + 1.49MB/93KB LE-i32 goldens. Reference capture reverted (dx_sig_fix intact). 56 ticoraw tests green; rustfmt-clean; module clippy-clean. Next: `bayer` (`step1_merge_4_to_2` + `step2_bayer_rows` → 16-bit CFA via the tone-curve LUT), oracle-validated. |
 
 <!-- Append a new row per session. Keep §9 "Next action" current. -->
 

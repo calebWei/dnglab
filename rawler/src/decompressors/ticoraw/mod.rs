@@ -55,6 +55,7 @@ mod precinct_header;
 mod predecessor;
 mod predict_lut;
 mod subband_config;
+mod tile;
 
 use crate::pixarray::PixU16;
 use picture_header::{is_supported_picture_header, parse_picture_header};
