@@ -275,7 +275,9 @@ Foundational → integration. Tick as completed; keep the "Next action" pointer 
 - [x] `tile` (`decode_tile` + `compute_buf_stripe_ints`/`compute_kband`: stripe
       orchestrator over 18 precincts, ver-lift bookkeeping, cross-tile overflow.
       Oracle bit-exact: full tile-0 coeff buffer (372736 ints) + overflow.)
-- [ ] `bayer` (`step1_merge_4_to_2`, `step2_bayer_rows`)
+- [x] `bayer` (`step1_merge_4_to_2` + `step2_bayer_rows`: 2D inverse 5/3 merge +
+      tone-curve LUT → 16-bit CFA. Oracle bit-exact: real 8×16 tile-0 window,
+      step1 L/H + step2 Bayer pixels.)
 - [ ] top-level `decode_nikon_he_image` (3-pass driver) → hook into `decode_ticoraw`
 
 **Validation**
@@ -348,13 +350,15 @@ be far enough along to validate (B). Right now (A) has an open blocker (DX).
   oracle bit-exact on the full precinct-0 bufA/bufB), **`idwt_horizontal`**
   (oracle bit-exact on precinct-0 `h_out`, both passes), and **`idwt_vertical`**
   (`ver_lift_lb_step` state machine, oracle bit-exact on a 260-call real trace),
-  and **`tile`** (`decode_tile`, oracle bit-exact on the full tile-0 coeff buffer
-  + overflow) are done. Next is **`bayer`** (`step1_merge_4_to_2` +
-  `step2_bayer_rows` from `nikon_he_bayer.{h,cpp}`) — the final reconstruction
-  stage: merges the 4 LB sub-bands back to L/H, then interleaves into Bayer rows
-  applying the tone-curve LUT (`iqx_iqp_lut`) to produce 16-bit CFA. Oracle-
-  validate the output Bayer pixels. Then the top-level 3-pass driver
-  (`decode_nikon_he_image`) hooked into `decode_ticoraw`.
+  **`tile`** (`decode_tile`, oracle bit-exact on the full tile-0 coeff buffer
+  + overflow), and **`bayer`** (`step1_merge_4_to_2` + `step2_bayer_rows`, oracle
+  bit-exact on a real 8×16 tile-0 window) are done. Next — the LAST module — is
+  the top-level **`decode_nikon_he_image`** (from `nikon_he_decode.{h,cpp}`): the
+  3-pass driver that walks the precinct stream (24-bit sizes, `sz+12` stride,
+  6-byte pad after every 16th precinct, 18-per-tile with 2-overlap), runs pass 1
+  `decode_tile` × n_tiles → pass 2 `step1` → pass 3 `step2` → 16-bit CFA, then
+  hook it into `decode_ticoraw` (replacing the WIP error) so real HE/HE\* NEFs
+  decode. Oracle-validate the full output Bayer image against the reference PGM.
   Validate each against the fixed oracle (bit-exact for HE). Reference:
   `D:\_repos\_ref_libraw_he\src\decoders\nikon_he\` (branch `nikon-he-decoder`,
   with `dx_sig_fix.patch` applied); target: `rawler/src/decompressors/ticoraw/`.
@@ -388,6 +392,8 @@ be far enough along to validate (B). Right now (A) has an open blocker (DX).
 | 2026-09-20 | 4       | **Ported `idwt_vertical` (workstream B, module 14/…) — second inverse-DWT stage.** Faithful port of `nikon_he_idwt_vertical.{h,cpp}`: `ver_lift_lb_step`, the per-LB-component 5/3 vertical-lift state machine (phase counter `2→5→7→8→(7→8)*→9→11` path A / `0→1→4→7→…` path B; states 7/8/9 write x1, tail variants at 7/9 with `x0=None`), plus `VerLiftStatePerLb` (owns its x2/x3 carry buffers — the reference held raw pointers into tile-wide arrays), the `ver_lift_state` constants, and the `ver_lift_init_path_a/b` + `ver_lift_should_advance_offset` helpers. `x0` is `Option<&[i32]>` (None = tail flush); `n==0` memcpy-LB calls tick state without touching x0 (guarded via `unwrap_or(&[])`, so the empty loop never indexes). All shifts arithmetic on `i32`. 2 unit tests (n==0 state tick; path-init helpers) + **1 oracle bit-exact cross-check** (`NIKON_HE_VL_DUMP`): replays a 260-call real trace from DSC_8070 — every transition (0→1,1→4,2→5,4→7,5→7,7→8,7→9,8→7,9→11,11→11) — feeding recorded state/x2/x3/x0 and asserting x1 (writing states), x2/x3 carries and next state match. The machine is lane-wise independent, so 8 captured lanes fully exercise the arithmetic. Fixture `ticoraw/testdata/idwt_vertical_calls_8070.txt`. Reference capture reverted (dx_sig_fix intact). 55 ticoraw tests green; rustfmt-clean; module clippy-clean. Next: `tile` (`decode_tile` stripe orchestrator + `compute_buf_stripe_ints`/`compute_kband`), oracle-validate full tile-0 `tile_coeff_buf`. |
 
 | 2026-09-20 | 4       | **Ported `tile` (workstream B, module 15/…) — the stripe orchestrator.** Faithful port of `nikon_he_tile.{h,cpp}`: `decode_tile` drives the per-precinct pipeline over a tile's 18 precincts — entropy (`decode_precinct`) → horizontal IDWT (both passes) → the memcpy-LL copy at `memcpy_cursor + 3*kband` → vertical lift (`run_one_ver_lift_loop` over the 4 LB components, LB strides `[lift_st,lift_st,0,lift_st]`) — then a 2-step partial-tile tail flush, copies the first 32 stripes to `tile_coeff_buf[tile_index*…]`, and saves the next 2 stripes as `overflow_carry`. Handles path-A (tile 0, state 2) vs path-B (tile>0, state 0, seed 2 stripes from overflow, `x1_write_offset`=8) entry and the `skip_pass_a_verlift` for precinct 0 of non-first tiles; `x1_write_offset += 4` when pre-tick state > 5. Plus the free `compute_buf_stripe_ints`/`compute_kband`. Takes `LayoutInfo` explicitly and each `VerLiftStatePerLb` owns its carry (vs the reference's tile-wide array + pointers); `precinct_data: &[&[u8]]` (length = precinct count). **Oracle bit-exact cross-check** (`NIKON_HE_TILE_DUMP`): decodes tile 0 of DSC_8070 and reproduces the reference's **entire tile-0 coefficient buffer (372736 ints) and cross-tile overflow (23296 ints)** exactly. Golden data stored as binary fixtures (the proper golden-file form): `tile0_8070.{meta.txt,precincts.bin,coeff.bin,overflow.bin}` — 151KB real precinct input + 1.49MB/93KB LE-i32 goldens. Reference capture reverted (dx_sig_fix intact). 56 ticoraw tests green; rustfmt-clean; module clippy-clean. Next: `bayer` (`step1_merge_4_to_2` + `step2_bayer_rows` → 16-bit CFA via the tone-curve LUT), oracle-validated. |
+
+| 2026-09-20 | 4       | **Ported `bayer` (workstream B, module 16/…) — final reconstruction.** Faithful port of `nikon_he_bayer.{h,cpp}`: `step1_merge_4_to_2` (2D inverse 5/3 merge of the 4 sub-band planes LL/LH/HH/HL → L/H with `>>3` lifting, c=0 boundary + carry + interior columns, whole-sample-symmetric row clamps) and `step2_bayer_rows` (final inverse + tone-curve LUT → two u16 Bayer rows per stripe row; `midpoint_bias=32768`, `lut_rounding=2`, `>>2`, 14-bit clamp to 16383). Planes are passed as whole source buffers + per-plane base offsets with signed row indexing, so the driver can pass image-wide `tile_coeff_buf`/`step1_scratch` and the cross-tile row `-1`/`w_rows` reads land in the neighbouring tile (the reference's raw-pointer behaviour, without unsafe). **Oracle bit-exact cross-check** (`NIKON_HE_BAYER_DUMP`): runs step1+step2 on a real 8×16 window of tile 0's coeff planes (from the committed `tile0_8070.coeff.bin`) with `is_first=is_last=true` — exercising both row clamps and the left/right column boundaries — and reproduces the reference's step1 L/H (128+128) and step2 Bayer pixels (512) exactly. Fixture `ticoraw/testdata/bayer_window_8070.txt`. Reference capture reverted (dx_sig_fix intact). 57 ticoraw tests green; rustfmt-clean; module clippy-clean. Next (LAST module): top-level `decode_nikon_he_image` 3-pass driver → hook into `decode_ticoraw`; oracle-validate the full Bayer image. |
 
 <!-- Append a new row per session. Keep §9 "Next action" current. -->
 

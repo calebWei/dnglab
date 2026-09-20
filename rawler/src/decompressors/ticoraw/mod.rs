@@ -41,6 +41,7 @@
 //! the repository root for the porting plan (reference: the clean-room decoder
 //! in yogthos/LibRaw PR #826).
 
+mod bayer;
 mod bit_reader;
 mod coefficient_decode;
 mod dequantize;
