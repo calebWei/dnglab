@@ -33,17 +33,21 @@
 //! (Lcod matches the TIFF `StripByteCounts`, and Wf/Hf match the raw SubIFD
 //! dimensions, so the mapping is verified.)
 //!
-//! # Status: PROTOTYPE
+//! # Status
 //!
-//! This module currently parses the JPEG-XS codestream framing (markers +
-//! picture header). The entropy decode, dequantization, inverse 5/3 DWT and
-//! Bayer reconstruction stages are **not yet implemented**. See `ROADMAP` in
-//! the repository root for the porting plan (reference: the clean-room decoder
-//! in yogthos/LibRaw PR #826).
+//! Full decode is implemented: JPEG-XS framing + picture header parse, the
+//! per-precinct entropy chain (GTLI / GCLI / coefficient / sign / dequantize),
+//! cross-band prediction, precinct scatter, the horizontal and vertical inverse
+//! 5/3 DWTs, tile assembly and Bayer reconstruction (tone-curve LUT). Ported
+//! module-by-module from the clean-room decoder in yogthos/LibRaw (branch
+//! `nikon-he-decoder`), each stage cross-checked bit-exactly against it; the
+//! full-image output is byte-identical to the reference on real HE and HE\*
+//! files. See `NIKON_HE_PROJECT.md` in the repository root.
 
 mod bayer;
 mod bit_reader;
 mod coefficient_decode;
+mod decode;
 mod dequantize;
 mod gcli_decode;
 mod gtli_table;
@@ -59,18 +63,17 @@ mod subband_config;
 mod tile;
 
 use crate::pixarray::PixU16;
+use decode::decode_nikon_he_image;
 use picture_header::{is_supported_picture_header, parse_picture_header};
 
 /// Decode a Nikon HE / HE\* (JPEG-XS / TicoRAW) codestream into a 16-bit CFA image.
 ///
 /// `src` is the whole raw strip (starting at the JPEG-XS `SOC` marker).
 ///
-/// # Prototype
-///
-/// Parses and validates the picture header (markers + WGT weights), then returns
-/// an error because the wavelet decode path is not implemented yet. The parsed
-/// header is logged so the framing can be validated against real files.
-pub fn decode_ticoraw(src: &[u8], width: usize, height: usize, bps: usize, _dummy: bool) -> Result<PixU16, String> {
+/// Parses and validates the picture header, then runs the full 3-pass decode
+/// ([`decode_nikon_he_image`]) into a 16-bit CFA image. In `dummy` mode only the
+/// dimensions are returned (a zeroed image), skipping the pixel decode.
+pub fn decode_ticoraw(src: &[u8], width: usize, height: usize, bps: usize, dummy: bool) -> Result<PixU16, String> {
   let ph = parse_picture_header(src).ok_or_else(|| "TicoRAW: failed to parse JPEG-XS picture header".to_string())?;
 
   // `src` may be zero-padded by the caller (subview_padded), so validate the
@@ -98,10 +101,24 @@ pub fn decode_ticoraw(src: &[u8], width: usize, height: usize, bps: usize, _dumm
     log::warn!("Nikon HE: PIH dims {}x{} disagree with TIFF {}x{}", ph.hdr_width, ph.hdr_height, width, height);
   }
 
-  Err(format!(
-    "Nikon HE (JPEG-XS/TicoRAW) decode not yet implemented. \
-     Parsed picture header OK: {}x{} bps={} comps={} nbands={} precinct_offset={} supported={}. \
-     Remaining stages: precinct/GCLI/coefficient entropy decode, dequantization, inverse 5/3 DWT, Bayer reconstruction.",
-    ph.hdr_width, ph.hdr_height, bps, ph.comps_num, ph.nbands, ph.precinct_offset, supported
-  ))
+  // In dummy mode the caller only wants dimensions, not pixels.
+  if dummy {
+    return Ok(PixU16::new(width, height));
+  }
+
+  if ph.precinct_offset >= src.len() {
+    return Err(format!("TicoRAW: precinct_offset {} beyond buffer {}", ph.precinct_offset, src.len()));
+  }
+  let stream = &src[ph.precinct_offset..strip_size.max(ph.precinct_offset)];
+
+  let mut bayer = vec![0u16; width * height];
+  let res = decode_nikon_he_image(stream, width, height, &ph, &mut bayer)?;
+  log::info!(
+    "Nikon HE/TicoRAW: decoded {} tiles, {} precincts (bps={})",
+    res.tiles_decoded,
+    res.total_precincts,
+    bps
+  );
+
+  Ok(PixU16::new_with(bayer, width, height))
 }

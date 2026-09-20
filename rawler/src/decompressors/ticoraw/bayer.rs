@@ -158,13 +158,8 @@ pub fn step2_bayer_rows(
     } else {
       v as usize
     };
-    let mut val = (lut[idx] + lut_rounding) >> LUT_SHIFT;
-    if val < 0 {
-      val = 0;
-    }
-    if val > CLIP_MAX {
-      val = CLIP_MAX;
-    }
+    // Reference clamps to [0, kClipMax] via two ifs; clamp() is identical here.
+    let val = ((lut[idx] + lut_rounding) >> LUT_SHIFT).clamp(0, CLIP_MAX);
     val as u16
   };
 

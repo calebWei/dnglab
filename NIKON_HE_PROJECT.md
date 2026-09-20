@@ -278,7 +278,10 @@ Foundational → integration. Tick as completed; keep the "Next action" pointer 
 - [x] `bayer` (`step1_merge_4_to_2` + `step2_bayer_rows`: 2D inverse 5/3 merge +
       tone-curve LUT → 16-bit CFA. Oracle bit-exact: real 8×16 tile-0 window,
       step1 L/H + step2 Bayer pixels.)
-- [ ] top-level `decode_nikon_he_image` (3-pass driver) → hook into `decode_ticoraw`
+- [x] top-level `decode_nikon_he_image` (3-pass driver: precinct-stream walk +
+      pass1 `decode_tile` → pass2 `step1` → pass3 `step2`) → wired into
+      `decode_ticoraw`. **Full-image bit-exact vs the reference on real HE + HE\***
+      (5600×3728, 59 tiles, 1048 precincts, 0 pixel mismatches on 3 files).
 
 **Validation**
 - [x] Build the reference **oracle harness** (`tools/nikon_he_oracle`, CMake+MSVC).
@@ -340,26 +343,25 @@ be far enough along to validate (B). Right now (A) has an open blocker (DX).
   precinct's sub-bands now exists; `precinct_decode` will wire them together.
   Header/framing
   **verified on real HE + HE\*** (5600×3728, comps=4, nbands=25,
-  precinct_offset=155=0x9B, supported=true). `decode_ticoraw` parses the picture
-  header and returns a WIP error (no pixels yet).
+  precinct_offset=155=0x9B, supported=true). `decode_ticoraw` now runs the full
+  decode.
 - **Foundational workstream (A) is COMPLETE**, including the DX fix — oracle
   decodes HE + HE\* on the Z50 II, matching Adobe (RMSE ≈ 0.57).
-- **▶ NEXT ACTION (resume module port, workstream B, §6a lifecycle, ONE at a time,
-  oracle-validated):** the per-sub-band entropy chain, `precinct_header` (DX `sig`
-  fix), `predecessor`, **`precinct_decode`** (the integration milestone,
-  oracle bit-exact on the full precinct-0 bufA/bufB), **`idwt_horizontal`**
-  (oracle bit-exact on precinct-0 `h_out`, both passes), and **`idwt_vertical`**
-  (`ver_lift_lb_step` state machine, oracle bit-exact on a 260-call real trace),
-  **`tile`** (`decode_tile`, oracle bit-exact on the full tile-0 coeff buffer
-  + overflow), and **`bayer`** (`step1_merge_4_to_2` + `step2_bayer_rows`, oracle
-  bit-exact on a real 8×16 tile-0 window) are done. Next — the LAST module — is
-  the top-level **`decode_nikon_he_image`** (from `nikon_he_decode.{h,cpp}`): the
-  3-pass driver that walks the precinct stream (24-bit sizes, `sz+12` stride,
-  6-byte pad after every 16th precinct, 18-per-tile with 2-overlap), runs pass 1
-  `decode_tile` × n_tiles → pass 2 `step1` → pass 3 `step2` → 16-bit CFA, then
-  hook it into `decode_ticoraw` (replacing the WIP error) so real HE/HE\* NEFs
-  decode. Oracle-validate the full output Bayer image against the reference PGM.
-  Validate each against the fixed oracle (bit-exact for HE). Reference:
+- **✅ WORKSTREAM B IS COMPLETE — the full decoder is ported and wired in.** All
+  16 stages (picture_header → subband_config/predict_lut → gtli_table →
+  iqx_iqp_lut_data → gcli_decode → coefficient_decode → dequantize →
+  precinct_header (DX fix) → predecessor → precinct_decode → idwt_horizontal →
+  idwt_vertical → tile → bayer → `decode_nikon_he_image`) are ported, each
+  oracle-cross-checked bit-exactly against the reference, and the top-level driver
+  is hooked into `decode_ticoraw`. **End-to-end result: the Rust decoder's Bayer
+  output is byte-identical to the reference C++ decoder on real HE + HE\*** (Z50 II,
+  5600×3728, 59 tiles / 1048 precincts, 0/20,876,800 pixel mismatches on 3 files —
+  1 HE, 2 HE\*), verified by the opt-in `e2e_full_image_matches_reference` test.
+- **▶ NEXT (post-port polish, no longer per-module):** wire real HE/HE\* NEF
+  fixtures into rawler's decoder integration tests (end-to-end via `decode_ticoraw`
+  from an actual `.NEF`); confirm the CFA orientation / black-level / whitebalance
+  metadata path in `nef.rs` produces a correct DNG (compare a full `dnglab convert`
+  against Adobe DNG); then upstream. Reference:
   `D:\_repos\_ref_libraw_he\src\decoders\nikon_he\` (branch `nikon-he-decoder`,
   with `dx_sig_fix.patch` applied); target: `rawler/src/decompressors/ticoraw/`.
 
@@ -394,6 +396,8 @@ be far enough along to validate (B). Right now (A) has an open blocker (DX).
 | 2026-09-20 | 4       | **Ported `tile` (workstream B, module 15/…) — the stripe orchestrator.** Faithful port of `nikon_he_tile.{h,cpp}`: `decode_tile` drives the per-precinct pipeline over a tile's 18 precincts — entropy (`decode_precinct`) → horizontal IDWT (both passes) → the memcpy-LL copy at `memcpy_cursor + 3*kband` → vertical lift (`run_one_ver_lift_loop` over the 4 LB components, LB strides `[lift_st,lift_st,0,lift_st]`) — then a 2-step partial-tile tail flush, copies the first 32 stripes to `tile_coeff_buf[tile_index*…]`, and saves the next 2 stripes as `overflow_carry`. Handles path-A (tile 0, state 2) vs path-B (tile>0, state 0, seed 2 stripes from overflow, `x1_write_offset`=8) entry and the `skip_pass_a_verlift` for precinct 0 of non-first tiles; `x1_write_offset += 4` when pre-tick state > 5. Plus the free `compute_buf_stripe_ints`/`compute_kband`. Takes `LayoutInfo` explicitly and each `VerLiftStatePerLb` owns its carry (vs the reference's tile-wide array + pointers); `precinct_data: &[&[u8]]` (length = precinct count). **Oracle bit-exact cross-check** (`NIKON_HE_TILE_DUMP`): decodes tile 0 of DSC_8070 and reproduces the reference's **entire tile-0 coefficient buffer (372736 ints) and cross-tile overflow (23296 ints)** exactly. Golden data stored as binary fixtures (the proper golden-file form): `tile0_8070.{meta.txt,precincts.bin,coeff.bin,overflow.bin}` — 151KB real precinct input + 1.49MB/93KB LE-i32 goldens. Reference capture reverted (dx_sig_fix intact). 56 ticoraw tests green; rustfmt-clean; module clippy-clean. Next: `bayer` (`step1_merge_4_to_2` + `step2_bayer_rows` → 16-bit CFA via the tone-curve LUT), oracle-validated. |
 
 | 2026-09-20 | 4       | **Ported `bayer` (workstream B, module 16/…) — final reconstruction.** Faithful port of `nikon_he_bayer.{h,cpp}`: `step1_merge_4_to_2` (2D inverse 5/3 merge of the 4 sub-band planes LL/LH/HH/HL → L/H with `>>3` lifting, c=0 boundary + carry + interior columns, whole-sample-symmetric row clamps) and `step2_bayer_rows` (final inverse + tone-curve LUT → two u16 Bayer rows per stripe row; `midpoint_bias=32768`, `lut_rounding=2`, `>>2`, 14-bit clamp to 16383). Planes are passed as whole source buffers + per-plane base offsets with signed row indexing, so the driver can pass image-wide `tile_coeff_buf`/`step1_scratch` and the cross-tile row `-1`/`w_rows` reads land in the neighbouring tile (the reference's raw-pointer behaviour, without unsafe). **Oracle bit-exact cross-check** (`NIKON_HE_BAYER_DUMP`): runs step1+step2 on a real 8×16 window of tile 0's coeff planes (from the committed `tile0_8070.coeff.bin`) with `is_first=is_last=true` — exercising both row clamps and the left/right column boundaries — and reproduces the reference's step1 L/H (128+128) and step2 Bayer pixels (512) exactly. Fixture `ticoraw/testdata/bayer_window_8070.txt`. Reference capture reverted (dx_sig_fix intact). 57 ticoraw tests green; rustfmt-clean; module clippy-clean. Next (LAST module): top-level `decode_nikon_he_image` 3-pass driver → hook into `decode_ticoraw`; oracle-validate the full Bayer image. |
+
+| 2026-09-20 | 4       | **Ported `decode_nikon_he_image` (workstream B, module 16/16 — THE CAPSTONE) and wired the decoder into `decode_ticoraw`.** Faithful port of `nikon_he_decode.{h,cpp}`: `walk_precincts` (24-bit size, `sz+12` stride, 6-byte pad after every 16th, zero-size sentinel) + the 3-pass driver (pass 1 `decode_tile`×n_tiles into the image-wide `tile_coeff_buf`; pass 2 `step1_merge_4_to_2`→`step1_scratch`; pass 3 `step2_bayer_rows`→ u16 Bayer — passes 2/3 rely on the whole-buffer + base-offset plane addressing for cross-tile row `-1`/`w_rows` reads). Fresh `PrecinctPredecessorState` per tile (overlap carries no prediction state). `decode_ticoraw` now parses the PIH, runs the decode into a `PixU16`, and honours `dummy` (dimensions-only). Ported `LayoutInfo`/`ph` explicitly (no thread-local). 2 hermetic unit tests for the precinct walk (stride+pad+sentinel; short-buffer stop) + an opt-in `e2e_full_image_matches_reference` (env-gated on the local strip + reference PGM). **CAPSTONE RESULT: the Rust decoder is byte-identical to the reference C++ on real files — 0 pixel mismatches across the full 5600×3728 image (59 tiles, 1048 precincts) on 3 files (1 HE `DSC_8070`, 2 HE\* `_0566`/`_0567`).** No fixture committed for the e2e test (multi-MB strip is external; run with `NIKON_HE_STRIP`/`NIKON_HE_REF_PGM`). Reference capture reverted (dx_sig_fix intact). 59 ticoraw tests green (+1 ignored e2e); rustfmt-clean; module clippy-clean. **Workstream B (full module port) is COMPLETE.** Next: rawler-level NEF integration test + DNG-vs-Adobe validation, then upstream. |
 
 <!-- Append a new row per session. Keep §9 "Next action" current. -->
 
