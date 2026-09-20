@@ -47,6 +47,7 @@ mod dequantize;
 mod gcli_decode;
 mod gtli_table;
 mod idwt_horizontal;
+mod idwt_vertical;
 mod iqx_iqp_lut_data;
 mod picture_header;
 mod precinct_decode;
